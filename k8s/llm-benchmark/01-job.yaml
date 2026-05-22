@@ -1,0 +1,63 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: guidellm-benchmark
+  namespace: llm-benchmark
+spec:
+  # Do not retry on failure — a failed benchmark should be inspected, not silently retried.
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+
+      # Run on the CPU node; the GPU node is tainted exclusively for vLLM.
+      nodeSelector:
+        node-role: system
+
+      initContainers:
+        # Poll vLLM's /health endpoint until the model is fully loaded.
+        # Model loading can take 5-15 minutes; this prevents a race condition
+        # where GuideLLM starts sending requests before vLLM is ready.
+        - name: wait-for-vllm
+          image: curlimages/curl:8
+          command:
+            - sh
+            - -c
+            - |
+              until curl -sf http://vllm.llm-serving.svc.cluster.local:8000/health; do
+                echo "$(date -u +%T) waiting for vLLM readiness..."
+                sleep 10
+              done
+              echo "vLLM is ready."
+
+      containers:
+        - name: guidellm
+          image: ghcr.io/neuralmagic/guidellm:latest
+          command:
+            - guidellm
+            - benchmark
+            - --target
+            - "http://vllm.llm-serving.svc.cluster.local:8000/v1"
+            - --model
+            - "meta-llama/Meta-Llama-3.1-8B-Instruct"
+            - --data
+            - "sharegpt"          # realistic chat dataset (prompt + multi-turn)
+            - --rate-type
+            - sweep               # automatic rate sweep: finds max throughput + latency curve
+            - --output-path
+            - /benchmarks
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+          volumeMounts:
+            - name: results
+              mountPath: /benchmarks
+
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: guidellm-results

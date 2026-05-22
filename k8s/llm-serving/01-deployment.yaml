@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: llm-serving
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
+    spec:
+      # Pin to the GPU node group.
+      nodeSelector:
+        node-role: llm-serving
+
+      # Required to schedule on the tainted GPU node.
+      tolerations:
+        - key: nvidia.com/gpu
+          value: "present"
+          effect: NoSchedule
+
+      containers:
+        - name: vllm
+          # Pin to a specific digest in production for reproducibility.
+          image: vllm/vllm-openai:latest
+          command: ["vllm", "serve"]
+          args:
+            - "meta-llama/Meta-Llama-3.1-8B-Instruct"
+            - "--gpu-memory-utilization=0.90"  # 24 GB × 0.90 = 21.6 GB reserved
+            - "--max-model-len=8192"           # fits within the 5.6 GB KV-cache headroom
+            - "--served-model-name=llama-3.1-8b"
+            - "--dtype=bfloat16"
+            - "--port=8000"
+            - "--host=0.0.0.0"
+            - "--tensor-parallel-size=1"       # single A10G
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+              cpu: "4"
+              memory: "16Gi"
+            limits:
+              nvidia.com/gpu: "1"
+              cpu: "8"
+              memory: "28Gi"
+
+          # Model loading takes 5-15 minutes on first start.
+          # startupProbe allows up to 10 minutes (60 × 10 s) before failing.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            failureThreshold: 60
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 30
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 60
+            failureThreshold: 3
+
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+
+      volumes:
+        # vLLM uses shared memory for CUDA IPC handles between workers.
+        # Default /dev/shm (64 MB) is too small; allocate half of GPU VRAM.
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 12Gi
