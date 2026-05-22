@@ -4,24 +4,6 @@ End-to-end baseline for serving **meta-llama/Meta-Llama-3.1-8B-Instruct** on AWS
 
 ---
 
-## Manifest Validation Findings
-
-Issues found and fixed in the original `infra/eks/` manifests:
-
-| File | Issue | Fix |
-|---|---|---|
-| `cluster.yaml` | `app` (m6i.4xlarge) and `akamas` nodes unused for this use case | `app` removed; `akamas` kept; GPU node added directly |
-| `cluster.yaml` | GPU node group missing entirely | `llm-serving` (g5.2xlarge) added with taint |
-| `nodegroups.yaml` | Missing `nvidia.com/gpu=present:NoSchedule` taint | Added; vLLM tolerates it, everything else is excluded |
-| `nodegroups.yaml` | Duplicated `tools`/`akamas` from `cluster.yaml` | Reduced to `llm-serving` only (now used for on-demand re-add only) |
-| `nodegroups.yaml` | `volumeSize: 50` — too small for model weights | Increased to 100 GB (16 GB model + ~10 GB images) |
-| `nodegroups.yaml` | No `amiFamily` | Added `amiFamily: AmazonLinux2` (EKS accelerated AMI with NVIDIA drivers) |
-| `provision.sh` | `CLUSTER_NAME="jvm-bench"` (copy-paste from JVM project) | Fixed to `vllm-bench` |
-| `provision.sh` | NVIDIA device plugin never installed | Added `kubectl apply` for device plugin DaemonSet |
-| `provision.sh` | Region comment said `eu-west-1` | Fixed to `us-east-2` |
-
----
-
 ## Architecture Overview
 
 ```
@@ -103,15 +85,68 @@ NVIDIA plugin  ✅ yes (built-in)   (any)           → lands on GPU node, expos
 
 ---
 
-## HuggingFace Secret — Why It's Needed
+## HuggingFace Secret — How to Get It and Why It's Needed
 
-Llama 3.1 8B Instruct is a "gated" model on HuggingFace. Meta requires you to:
-1. Accept the license at <https://huggingface.co/meta-llama/Meta-Llama-3.1-8B-Instruct>
-2. Use an authenticated token to download the weights
+### Why it's required
 
-When the vLLM pod starts, it downloads ~16 GB of model weights from the HuggingFace Hub. It reads the `HUGGING_FACE_HUB_TOKEN` environment variable to authenticate. The Kubernetes Secret is the standard way to inject this token without hardcoding it in the manifest (never store secrets in Git).
+Llama 3.1 8B Instruct is a **gated** model on HuggingFace: Meta requires you to explicitly accept the license before the download is allowed. When the vLLM pod starts, it downloads ~16 GB of weights directly from the HuggingFace Hub via the `huggingface_hub` library. Without an authenticated token the Hub responds with `401 Unauthorized` and vLLM crashes on first startup.
 
-Without the secret → vLLM crashes at startup with `HTTPError: 401 Client Error`.
+The Kubernetes Secret is the correct way to inject the token into the pod without hardcoding it in the manifest or in code (never commit it to Git).
+
+### Step 1 — Create a HuggingFace account
+
+If you don't already have one: <https://huggingface.co/join>
+
+### Step 2 — Accept the model license
+
+1. Go to <https://huggingface.co/meta-llama/Meta-Llama-3.1-8B-Instruct>
+2. Log in with your account
+3. A banner at the top of the page reads *"You need to agree to share your contact information to access this model"*
+4. Fill in the form (name, organisation, intended use) and click **Submit**
+5. You will receive a confirmation email from Meta within a few minutes — **wait for this email** before proceeding, otherwise the download fails with `403 Forbidden` even with a valid token
+
+### Step 3 — Generate an Access Token
+
+1. Go to <https://huggingface.co/settings/tokens>
+2. Click **New token**
+3. Give it a descriptive name (e.g. `vllm-bench-eks`)
+4. Select type **Read** — sufficient for downloading models, Write is not needed
+5. Click **Generate a token**
+6. **Copy the token immediately** — HuggingFace shows it only once. It has the format `hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
+
+### Step 4 — Create the Kubernetes Secret
+
+```bash
+kubectl create secret generic hf-token \
+  --from-literal=token=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+  --namespace llm-serving
+```
+
+Verify it was created:
+
+```bash
+kubectl get secret hf-token -n llm-serving
+# NAME       TYPE     DATA   AGE
+# hf-token   Opaque   1      5s
+```
+
+> `k8s/llm-serving/00-hf-secret.yaml` in this repo is a **blank template** — never commit a real token to Git.
+
+### How the injection works
+
+The Secret is mounted as an environment variable in the vLLM container:
+
+```yaml
+# k8s/llm-serving/01-deployment.yaml
+env:
+  - name: HUGGING_FACE_HUB_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: hf-token  # name of the Secret created above
+        key: token       # key inside the Secret
+```
+
+The `huggingface_hub` library reads `HUGGING_FACE_HUB_TOKEN` automatically at runtime and uses it to authenticate all requests to the Hub.
 
 ---
 
