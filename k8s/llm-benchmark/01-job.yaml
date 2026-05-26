@@ -42,12 +42,7 @@ spec:
           image: ghcr.io/neuralmagic/guidellm:latest
           env:
             # Required to download the tokenizer and the benchmark dataset from HuggingFace
-            # at full authenticated speed. Without this, anonymous rate limiting causes
-            # tokenizer.json (~11 MB) to download at ~20 KB/s → 10+ minute hang.
-            # Create the secret before running:
-            #   kubectl create secret generic hf-token \
-            #     --from-literal=token=hf_xxx \
-            #     --namespace llm-benchmark
+            # at full authenticated speed. 
             - name: HUGGING_FACE_HUB_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -59,21 +54,14 @@ spec:
             - --target
             - "http://vllm.llm-serving.svc.cluster.local:8000/v1"
             - --model
-            - "qwen2.5-7b"           # must match --served-model-name in vLLM deployment
+            - "qwen2.5-7b"           
             # - "llama-3.1-8b"       # uncomment if switched to Llama
             - --data
-            # Synthetic benchmark config — ISL=512, OSL=128 tokens.
-            # This is the standard configuration used in vLLM's official benchmark_serving.py
-            # and the LLM Perf Leaderboard. Fully reproducible and comparable with
-            # published numbers. No HuggingFace dataset download required.
             - "prompt_tokens=512,output_tokens=128"
             - --processor
-            # Tokenizer for accurate token counting. Downloaded at full speed thanks
-            # to HUGGING_FACE_HUB_TOKEN above.
             - "Qwen/Qwen2.5-7B-Instruct"
-            # - "meta-llama/Meta-Llama-3.1-8B-Instruct"  # uncomment if switched to Llama
             - --rate-type
-            - throughput          # find maximum sustainable throughput (avoids sweep=0.0 bug in latest)
+            - throughput          # find maximum sustainable throughput
             - --output-path
             - /benchmarks
           resources:
