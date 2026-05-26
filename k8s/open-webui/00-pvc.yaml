@@ -2,7 +2,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: open-webui-data
-  namespace: llm-serving
+  namespace: monitoring
 spec:
   accessModes:
     - ReadWriteOnce

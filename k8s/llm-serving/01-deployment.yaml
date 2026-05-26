@@ -5,6 +5,11 @@ metadata:
   namespace: llm-serving
 spec:
   replicas: 1
+  # Recreate terminates the old pod before creating the new one.
+  # RollingUpdate (default) would deadlock here: the new pod waits for the GPU
+  # held by the old pod, which won't be killed until the new pod is ready.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: vllm
@@ -13,14 +18,21 @@ spec:
       labels:
         app: vllm
     spec:
+      # Prevent Kubernetes from injecting service discovery env vars (e.g. VLLM_PORT=tcp://...)
+      # which conflict with vLLM's own VLLM_PORT variable and cause a crash on startup.
+      # See: https://docs.vllm.ai/en/stable/serving/env_vars.html
+      enableServiceLinks: false
+
       # Pin to the GPU node group.
       nodeSelector:
         node-role: llm-serving
 
       # Required to schedule on the tainted GPU node.
+      # operator: Exists matches the taint regardless of its value
+      # (covers both "nvidia.com/gpu:NoSchedule" and "nvidia.com/gpu=present:NoSchedule").
       tolerations:
         - key: nvidia.com/gpu
-          value: "present"
+          operator: Exists
           effect: NoSchedule
 
       containers:
@@ -29,10 +41,14 @@ spec:
           image: vllm/vllm-openai:latest
           command: ["vllm", "serve"]
           args:
-            - "meta-llama/Meta-Llama-3.1-8B-Instruct"
+            # --- Active model ---
+            - "Qwen/Qwen2.5-7B-Instruct"
+            - "--served-model-name=qwen2.5-7b"
+            # --- To switch back to Llama (requires HF token + license approval): ---
+            # - "meta-llama/Meta-Llama-3.1-8B-Instruct"
+            # - "--served-model-name=llama-3.1-8b"
             - "--gpu-memory-utilization=0.90"  # 24 GB × 0.90 = 21.6 GB reserved
-            - "--max-model-len=8192"           # fits within the 5.6 GB KV-cache headroom
-            - "--served-model-name=llama-3.1-8b"
+            - "--max-model-len=8192"
             - "--dtype=bfloat16"
             - "--port=8000"
             - "--host=0.0.0.0"
@@ -41,12 +57,12 @@ spec:
             - name: http
               containerPort: 8000
               protocol: TCP
-          env:
-            - name: HUGGING_FACE_HUB_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: hf-token
-                  key: token
+          # env:                          # uncomment + add hf-token secret when switching to Llama
+          #   - name: HUGGING_FACE_HUB_TOKEN
+          #     valueFrom:
+          #       secretKeyRef:
+          #         name: hf-token
+          #         key: token
           resources:
             requests:
               nvidia.com/gpu: "1"

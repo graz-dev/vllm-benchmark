@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: guidellm-prompts
+  namespace: llm-benchmark
+data:
+  prompts.txt: |
+    Explain the difference between supervised and unsupervised machine learning, providing examples of each and discussing when you would choose one approach over the other.
+    What are the main causes of climate change and what are the most effective strategies individuals and governments can adopt to reduce carbon emissions?
+    Write a Python function that implements a binary search tree with insert, delete, and search operations. Include proper error handling and documentation.
+    Describe the key principles of microservices architecture and compare it with monolithic architecture. What are the trade-offs in terms of scalability, maintenance, and complexity?
+    How does the human immune system distinguish between self and non-self cells? Explain the role of T cells, B cells, and antibodies in adaptive immunity.
+    Explain how transformers work in natural language processing. Cover the attention mechanism, positional encoding, and how they enable parallelisation during training.
+    What are the most important considerations when designing a relational database schema for an e-commerce platform? Discuss normalisation, indexing, and common pitfalls.
+    Describe the process of photosynthesis in detail, covering both the light-dependent and light-independent reactions and how they are connected.
+    What is the difference between TCP and UDP protocols? In what situations would you choose one over the other and why?
+    Explain the concept of containerisation with Docker and Kubernetes. How do they work together to enable scalable application deployment?
+    Write a detailed explanation of how gradient descent works in neural network training, including variants like SGD, Adam, and RMSprop.
+    What are the main architectural differences between RISC and CISC processors? How do modern CPUs incorporate features from both approaches?
+    Explain the CAP theorem in distributed systems and how databases like Cassandra, MongoDB, and PostgreSQL make different trade-offs.
+    Describe the history and evolution of the internet from ARPANET to the modern web. What were the key technical milestones?
+    How do blockchains achieve consensus without a central authority? Compare proof-of-work and proof-of-stake mechanisms.
+    Explain the concept of recursion in programming with three different examples of increasing complexity, discussing when recursion is preferable to iteration.
+    What are the psychological principles behind effective user interface design? Discuss Gestalt principles, cognitive load, and accessibility best practices.
+    Describe how CRISPR-Cas9 gene editing works at the molecular level. What are its potential medical applications and ethical concerns?
+    Explain the differences between REST, GraphQL, and gRPC for building APIs. What are the strengths and weaknesses of each approach?
+    How does the global financial system work? Explain the roles of central banks, commercial banks, and international institutions like the IMF and World Bank.
+    Write a comprehensive explanation of big O notation for algorithm complexity. Cover O(1), O(log n), O(n), O(n log n), O(n²) with examples.
+    What are the main theories about the formation of the solar system? How do we know about the early conditions of Earth?
+    Explain how operating system process scheduling works. Compare round-robin, priority scheduling, and completely fair scheduling algorithms.
+    Describe the architecture of a modern convolutional neural network for image classification. Explain convolutions, pooling, and fully connected layers.
+    What are the key differences between functional and object-oriented programming paradigms? When is each approach most appropriate?
+    How does HTTPS work? Explain TLS handshake, certificate validation, symmetric and asymmetric encryption in the context of web security.
+    Explain the principles of Domain-Driven Design and how they help manage complexity in large software systems.
+    What are the main differences between SQL and NoSQL databases? When would you choose a document store, key-value store, or graph database?
+    Describe how the human brain processes language. What do neuroscience and linguistics tell us about language comprehension and production?
+    Explain the concept of entropy in thermodynamics and information theory. How are these two definitions related?
+    What is quantum entanglement and why did Einstein call it spooky action at a distance? What are its implications for quantum computing?
+    Describe the software development lifecycle and compare Agile, Scrum, and Waterfall methodologies. When is each approach most appropriate?
+    How do recommendation systems work? Explain collaborative filtering, content-based filtering, and hybrid approaches with practical examples.
+    What are the main principles of clean code? Discuss naming conventions, function design, comments, and error handling best practices.
+    Explain how memory management works in modern operating systems. Cover virtual memory, paging, segmentation, and garbage collection.
+    Describe the evolution of large language models from RNNs and LSTMs to the transformer architecture and modern foundation models.
+    What are the ethical implications of artificial intelligence in decision-making systems? Discuss bias, fairness, transparency, and accountability.
+    How does version control with Git work internally? Explain commits, branches, merges, and the underlying data structure.
+    Explain the role of mitochondria in cellular energy production. Describe the electron transport chain and ATP synthesis in detail.
+    What are the key concepts in network security? Cover firewalls, intrusion detection systems, VPNs, and zero trust architecture.
+    Describe the principles of functional reactive programming and how frameworks like React use these concepts for UI development.
+    How do search engines work? Explain web crawling, indexing, PageRank, and modern approaches to ranking and relevance.
+    What are the main techniques in natural language processing for sentiment analysis? Compare lexicon-based and machine learning approaches.
+    Explain how relational databases implement ACID transactions. Cover atomicity, consistency, isolation, and durability with examples.
+    Describe the differences between L1, L2, and L3 cache in modern processors and how cache coherency works in multi-core systems.
+    How does the Kubernetes scheduler decide which node to place a pod on? Explain the filtering and scoring phases.
+    What are design patterns? Explain the factory, observer, strategy, and decorator patterns with real-world use cases.
+    Describe the human digestive system from ingestion to absorption. What roles do the liver, pancreas, and microbiome play?
+    Explain how public key infrastructure (PKI) works. Cover certificate authorities, digital signatures, and certificate revocation.
+    What are the main differences between supervised learning algorithms like linear regression, decision trees, random forests, and neural networks?

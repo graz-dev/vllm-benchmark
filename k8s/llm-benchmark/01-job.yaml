@@ -14,17 +14,24 @@ spec:
       nodeSelector:
         node-role: system
 
+      # Allow the GuideLLM container to write results to the PVC.
+      # The default GuideLLM image runs as a non-root user; without fsGroup
+      # the mounted volume is owned by root and not writable.
+      securityContext:
+        fsGroup: 0
+        runAsUser: 0
+
       initContainers:
         # Poll vLLM's /health endpoint until the model is fully loaded.
         # Model loading can take 5-15 minutes; this prevents a race condition
         # where GuideLLM starts sending requests before vLLM is ready.
         - name: wait-for-vllm
-          image: curlimages/curl:8
+          image: alpine:3
           command:
             - sh
             - -c
             - |
-              until curl -sf http://vllm.llm-serving.svc.cluster.local:8000/health; do
+              until wget -qO- http://vllm.llm-serving.svc.cluster.local:8000/health >/dev/null 2>&1; do
                 echo "$(date -u +%T) waiting for vLLM readiness..."
                 sleep 10
               done
@@ -33,17 +40,40 @@ spec:
       containers:
         - name: guidellm
           image: ghcr.io/neuralmagic/guidellm:latest
+          env:
+            # Required to download the tokenizer and the benchmark dataset from HuggingFace
+            # at full authenticated speed. Without this, anonymous rate limiting causes
+            # tokenizer.json (~11 MB) to download at ~20 KB/s → 10+ minute hang.
+            # Create the secret before running:
+            #   kubectl create secret generic hf-token \
+            #     --from-literal=token=hf_xxx \
+            #     --namespace llm-benchmark
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
           command:
             - guidellm
             - benchmark
             - --target
             - "http://vllm.llm-serving.svc.cluster.local:8000/v1"
             - --model
-            - "meta-llama/Meta-Llama-3.1-8B-Instruct"
+            - "qwen2.5-7b"           # must match --served-model-name in vLLM deployment
+            # - "llama-3.1-8b"       # uncomment if switched to Llama
             - --data
-            - "sharegpt"          # realistic chat dataset (prompt + multi-turn)
+            # Synthetic benchmark config — ISL=512, OSL=128 tokens.
+            # This is the standard configuration used in vLLM's official benchmark_serving.py
+            # and the LLM Perf Leaderboard. Fully reproducible and comparable with
+            # published numbers. No HuggingFace dataset download required.
+            - "prompt_tokens=512,output_tokens=128"
+            - --processor
+            # Tokenizer for accurate token counting. Downloaded at full speed thanks
+            # to HUGGING_FACE_HUB_TOKEN above.
+            - "Qwen/Qwen2.5-7B-Instruct"
+            # - "meta-llama/Meta-Llama-3.1-8B-Instruct"  # uncomment if switched to Llama
             - --rate-type
-            - sweep               # automatic rate sweep: finds max throughput + latency curve
+            - throughput          # find maximum sustainable throughput (avoids sweep=0.0 bug in latest)
             - --output-path
             - /benchmarks
           resources:

@@ -1,13 +1,13 @@
-# LoadBalancer type provisions an AWS NLB and assigns a public DNS name.
-# Get the URL with:  kubectl get svc open-webui -n llm-serving
+# LoadBalancer type provisions an AWS NLB and assigns a public IP / DNS name.
+# Get the external IP with:  kubectl get svc open-webui -n monitoring
 #
 # For an internal-only setup, change type to ClusterIP and use:
-#   kubectl port-forward svc/open-webui 8080:8080 -n llm-serving
+#   kubectl port-forward svc/open-webui 8080:8080 -n monitoring
 apiVersion: v1
 kind: Service
 metadata:
   name: open-webui
-  namespace: llm-serving
+  namespace: monitoring
   annotations:
     # Use NLB instead of the legacy Classic Load Balancer.
     service.beta.kubernetes.io/aws-load-balancer-type: "nlb"

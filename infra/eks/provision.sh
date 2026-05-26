@@ -6,7 +6,7 @@ set -euo pipefail
 # Node layout (all defined in cluster.yaml, created in one shot):
 #   system      (m6i.xlarge,  4 vCPU / 16 GB)               — Prometheus, Grafana, Open WebUI, GuideLLM
 #   akamas      (r6i.xlarge,  4 vCPU / 32 GB)               — Akamas (optional)
-#   llm-serving (g5.2xlarge,  8 vCPU / 32 GB / 1× A10G)     — vLLM only (tainted)
+#   llm-serving (g5.2xlarge,  8 vCPU / 32 GB / 1× A10G)     — vLLM only (tainted, AmazonLinux2023)
 #
 # After the cluster is up, the NVIDIA device plugin DaemonSet is installed
 # so that Kubernetes can see nvidia.com/gpu as an allocatable resource.
@@ -59,6 +59,9 @@ echo "Region  : $AWS_REGION"
 echo ""
 
 # --- 1. Create cluster (all node groups defined in cluster.yaml) ---
+# NOTE: when using -f, eksctl reads region from cluster.yaml (us-east-2).
+# The --region flag of this script only affects eksctl get/delete and aws cli calls.
+# To deploy in a different region, update cluster.yaml directly.
 echo "[1/5] Cluster + node groups..."
 if eksctl get cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" $PROFILE_ARG >/dev/null 2>&1; then
   echo "  Cluster '$CLUSTER_NAME' already exists — skipping creation."
@@ -79,7 +82,7 @@ echo "[3/5] Applying GP3 StorageClass..."
 kubectl apply -f "$STORAGE_CLASS"
 
 # --- 4. NVIDIA device plugin ---
-# The EKS accelerated AMI (amiFamily: AmazonLinux2 on GPU instance) ships with
+# The EKS accelerated AMI (amiFamily: AmazonLinux2023 on GPU instance) ships with
 # NVIDIA drivers in the OS — but Kubernetes does not know about the GPU until
 # the device plugin DaemonSet is running and advertising nvidia.com/gpu resources.
 #
@@ -115,16 +118,28 @@ echo "  # Should show: nvidia.com/gpu: 1"
 echo ""
 echo "Next steps:"
 echo ""
-echo "  1. Accept the Llama 3.1 license on HuggingFace, then create the token secret:"
-echo "       kubectl create secret generic hf-token \\"
-echo "         --from-literal=token=<YOUR_HF_TOKEN> \\"
-echo "         --namespace llm-serving"
-echo ""
-echo "  2. Deploy vLLM + Open WebUI:"
+echo "  1. Deploy vLLM (default model: Qwen2.5-7B-Instruct — no token required):"
 echo "       kubectl apply -f $K8S_DIR/llm-serving/"
 echo "       kubectl rollout status deploy/vllm -n llm-serving --timeout=15m"
 echo ""
-echo "  3. Install Prometheus + Grafana:"
+echo "     To use Llama 3.1 8B instead, first create the HuggingFace token secret:"
+echo "       kubectl create secret generic hf-token \\"
+echo "         --from-literal=token=<YOUR_HF_TOKEN> \\"
+echo "         --namespace llm-serving"
+echo "     Then edit k8s/llm-serving/01-deployment.yaml to switch the active model."
+echo ""
+echo "  2. Deploy Open WebUI (namespace: monitoring, exposed via NLB):"
+echo "       kubectl apply -f $K8S_DIR/open-webui/"
+echo "       kubectl get svc open-webui -n monitoring  # EXTERNAL-IP = public URL"
+echo ""
+echo "  3. Install NVIDIA DCGM Exporter (GPU hardware metrics):"
+echo "       helm repo add gpu-helm-charts https://nvidia.github.io/dcgm-exporter/helm-charts"
+echo "       helm repo update"
+echo "       helm upgrade --install dcgm-exporter gpu-helm-charts/dcgm-exporter \\"
+echo "         --namespace monitoring \\"
+echo "         -f $K8S_DIR/monitoring/dcgm-exporter-values.yaml"
+echo ""
+echo "  4. Install Prometheus + Grafana:"
 echo "       helm repo add prometheus-community https://prometheus-community.github.io/helm-charts"
 echo "       helm repo update"
 echo "       helm upgrade --install kube-prometheus-stack \\"
@@ -133,17 +148,17 @@ echo "         --namespace monitoring --create-namespace \\"
 echo "         -f $K8S_DIR/monitoring/values-kube-prometheus.yaml"
 echo "       kubectl apply -f $K8S_DIR/monitoring/servicemonitor.yaml"
 echo ""
-echo "  4. Run GuideLLM benchmark:"
+echo "  5. Import the Grafana dashboard:"
+echo "       kubectl port-forward svc/kube-prometheus-stack-grafana 3000:80 -n monitoring"
+echo "       open http://localhost:3000  # admin / changeme"
+echo "       Dashboards → Import → Upload: $K8S_DIR/monitoring/grafana-vllm-dashboard.json"
+echo ""
+echo "  6. Run GuideLLM benchmark:"
 echo "       kubectl apply -f $K8S_DIR/llm-benchmark/"
 echo "       kubectl logs -f job/guidellm-benchmark -n llm-benchmark"
 echo ""
-echo "  5. Access UIs:"
-echo "       Open WebUI  : kubectl get svc open-webui -n llm-serving  # check EXTERNAL-IP"
-echo "       Grafana     : kubectl port-forward svc/kube-prometheus-stack-grafana 3000:80 -n monitoring"
-echo "                     open http://localhost:3000  # admin / changeme"
-echo ""
 echo "Stop GPU billing (keep cluster running):"
-echo "  eksctl delete nodegroup --cluster $CLUSTER_NAME --region $AWS_REGION --name llm-serving $PROFILE_ARG"
+echo "  eksctl delete nodegroup --cluster $CLUSTER_NAME --region $AWS_REGION --name llm-serving --approve $PROFILE_ARG"
 echo ""
 echo "Full teardown:"
 echo "  eksctl delete cluster --name $CLUSTER_NAME --region $AWS_REGION $PROFILE_ARG"

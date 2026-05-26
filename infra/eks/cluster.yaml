@@ -43,7 +43,7 @@ managedNodeGroups:
     minSize: 0
     maxSize: 1
     volumeSize: 100
-    amiFamily: AmazonLinux2  
+    amiFamily: AmazonLinux2023
     labels:
       node-role: llm-serving
     taints:
