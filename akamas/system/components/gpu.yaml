@@ -1,0 +1,10 @@
+kind: component
+system: vLLM_Benchmark
+
+name: gpu
+description: GPU component type
+componentType: GPU
+properties:
+  prometheus:
+    pod: XXXX
+    gpu: YYYY

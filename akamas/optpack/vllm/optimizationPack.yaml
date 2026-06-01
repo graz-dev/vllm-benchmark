@@ -1,0 +1,4 @@
+name: vLLM
+description: Optimization pack for vLLM
+version: 1.0.0
+weight: 0
