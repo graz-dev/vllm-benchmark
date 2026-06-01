@@ -41,17 +41,13 @@ spec:
           image: vllm/vllm-openai:latest
           command: ["vllm", "serve"]
           args:
-            # --- Active model ---
             - "Qwen/Qwen2.5-7B-Instruct"
             - "--served-model-name=qwen2.5-7b"
-            # --- To switch back to Llama (requires HF token + license approval): ---
             # - "meta-llama/Meta-Llama-3.1-8B-Instruct"
             # - "--served-model-name=llama-3.1-8b"
             - "--gpu-memory-utilization=0.90"  # 24 GB × 0.90 = 21.6 GB reserved
-            - "--max-num-seqs=128"
-            - "--max-num-batched-tokens=1024"
-            - "--max-model-len=8192"
-            - "--dtype=bfloat16"
+            #- "--max-model-len=8192"
+            #- "--dtype=bfloat16"
             - "--port=8000"
             - "--host=0.0.0.0"
             - "--tensor-parallel-size=1"       # single A10G

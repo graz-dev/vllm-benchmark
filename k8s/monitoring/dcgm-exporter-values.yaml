@@ -26,10 +26,15 @@ serviceMonitor:
   interval: 15s
   namespace: monitoring
 
-# Key metrics collected (exposed as DCGM_FI_DEV_* by the exporter):
-#   DCGM_FI_DEV_GPU_UTIL       — GPU compute utilisation %
-#   DCGM_FI_DEV_MEM_COPY_UTIL  — Memory bandwidth utilisation %
-#   DCGM_FI_DEV_FB_USED        — VRAM used (MiB)
-#   DCGM_FI_DEV_FB_FREE        — VRAM free (MiB)
-#   DCGM_FI_DEV_POWER_USAGE    — Power draw (W)
-#   DCGM_FI_DEV_GPU_TEMP       — GPU temperature (°C)
+extraConfigMapVolumes:
+- name: exporter-metrics-volume
+  configMap:
+    name: dcgm-custom-metrics  # your configmap name
+    items:
+    - key: metrics
+      path: dcgm_counters.csv  # your file name here
+
+extraVolumeMounts:
+- name: exporter-metrics-volume
+  mountPath: /etc/dcgm-exporter/default-counters.csv
+  subPath: dcgm_counters.csv
