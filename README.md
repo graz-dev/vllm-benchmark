@@ -301,6 +301,12 @@ kubectl create secret generic hf-token \
 kubectl apply -f k8s/llm-serving/
 ```
 
+> **First boot vs subsequent boots:**
+> - **First boot**: vLLM downloads the model from HuggingFace (~14 GB for Qwen, ~16 GB for Llama) and caches it on the PVC at `/root/.cache/huggingface`. This takes **5–15 minutes** depending on network speed.
+> - **Subsequent restarts/patches**: model is already on the PVC — startup takes **~60 seconds** (weights load from disk into GPU VRAM).
+>
+> The `vllm-model-cache` PVC (25 GB) is created by `03-model-cache-pvc.yaml` and persists across pod restarts, redeployments, and node patches. To switch models, the old model files remain on the PVC (both fit within 25 GB) — vLLM will use the cached version if already present.
+
 Watch vLLM startup (model download + load: 5–15 min on first run):
 
 ```bash
@@ -672,7 +678,8 @@ eksctl delete cluster --name vllm-bench --region us-east-2
     ├── llm-serving/
     │   ├── 00-hf-secret.yaml             # HuggingFace token secret (template — do not commit token)
     │   ├── 01-deployment.yaml            # vLLM (GPU, taint toleration, enableServiceLinks: false, Recreate strategy)
-    │   └── 02-service.yaml               # ClusterIP on :8000
+    │   ├── 02-service.yaml               # ClusterIP on :8000
+    │   └── 03-model-cache-pvc.yaml       # 25 GB PVC for HF model cache — eliminates re-download on restart
     ├── open-webui/
     │   ├── 00-pvc.yaml                   # 5 GB PVC for chat history + settings  (namespace: monitoring)
     │   ├── 01-deployment.yaml            # Open WebUI (CPU node, connects to vLLM via FQDN)  (namespace: monitoring)
