@@ -1,0 +1,48 @@
+metrics:
+# GPU utilization (DCGM-exporter) ---
+  - name: gpu_util
+    unit: percent
+    description: GPU memory utilization
+  - name: gpu_sm_active
+    unit: percent
+    description: GPU streaming multiprocessor utilization
+  - name: gpu_sm_occupancy
+    unit: percent
+    description: GPU streaming multiprocessor occupancy
+  - name: gpu_tensor_core_active
+    unit: percent
+    description: GPU tensor core utilization
+  - name: gpu_dram_active
+    unit: percent
+    description: GPU DRAM utilization
+  - name: gpu_fb_used
+    unit: megabytes
+    description: GPU framebuffer memory used
+  - name: gpu_fb_total
+    unit: megabytes
+    description: GPU framebuffer memory total
+  - name: gpu_power_usage
+    unit: watt
+    description: GPU power usage
+  - name: gpu_power_limit
+    unit: watt
+    description: GPU power limit
+  - name: gpu_temp
+    unit: celsius
+    description: GPU temperature
+  - name: gpu_memory_temp
+    unit: celsius
+    description: GPU memory temperature
+  - name: gpu_power_violation_rate
+    unit: violations per second
+    description: GPU power violation rate
+  - name: gpu_thermal_violation_rate
+    unit: violations per second
+    description: GPU thermal violation rate
+# advanced: non-tensor pipe activity (FP16 / FP32)
+  - name: gpu_fp16_pipe_active
+    unit: percent
+    description: GPU FP16 pipe active
+  - name: gpu_fp32_pipe_active
+    unit: percent
+    description: GPU FP32 pipe active

@@ -1,0 +1,22 @@
+parameters:
+  - name: gpu_memory_utilization
+    description: Target GPU memory utilization. The default is 0.90, which means that
+    restart: true
+    unit: percentage
+  - name: max_num_seqs
+    description: Maximum number of sequences per batch. The default is 128.
+    restart: true
+    unit: sequences
+  - name: max_num_batched_tokens
+    description: Maximum number of tokens per batch. The default is 1024.
+    restart: true
+    unit: tokens
+  - name: max_model_len
+    description: Maximum model context length. The default is 8192.
+    restart: true
+    unit: tokens
+  - name: tensor_parallel_size
+    description: Tensor parallelism degree. The default is 1 (no tensor parallelism).
+    restart: true
+    unit: parallelism degree
+

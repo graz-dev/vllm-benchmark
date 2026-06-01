@@ -1,0 +1,84 @@
+metrics:
+# step 1: isolate the symptom: TTFT vs. ITL
+  - name: e2e_request_latency_p95
+    unit: milliseconds
+    description: e2e_request_latency_p95
+  - name: e2e_request_latency_avg
+    unit: milliseconds
+    description: e2e_request_latency_avg
+  - name: request_success_rate
+    unit: requests per second
+    description: request_success_rate
+  - name: time_to_first_token_p95
+    unit: milliseconds
+    description: time_to_first_token_p95
+  - name: time_to_first_token_avg
+    unit: milliseconds
+    description: time_to_first_token_avg
+  - name: prefill_token_throughput
+    unit: tokens
+    description: prefill_token_throughput
+  - name: inter_token_latency_p95
+    unit: milliseconds
+    description: inter_token_latency_p95
+  - name: inter_token_latency_avg
+    unit: milliseconds
+    description: inter_token_latency_avg
+  - name: decode_token_throughput
+    unit: tokens
+    description: decode_token_throughput
+# step 2: detect server saturation
+  - name: num_requests_running
+    unit: requests
+    description: num_requests_running
+  - name: num_requests_waiting
+    unit: requests
+    description: num_requests_waiting
+# step 3: evaluate VRAM and KV cache health
+  - name: kv_cache_usage_avg
+    unit: percentage
+    description: kv_cache_usage_avg
+  - name: kv_cache_usage_max
+    unit: percentage
+    description: kv_cache_usage_max
+  - name: preemption_rate
+    unit: preemptions per second
+    description: preemption_rate
+  - name: prefix_cache_hit_rate
+    unit: percentage
+    description: prefix_cache_hit_rate
+# step 4: analyze request sequence lengths
+  - name: input_sequence_length_p95
+    unit: tokens
+    description: input_sequence_length_p95
+  - name: input_sequence_length_avg
+    unit: tokens
+    description: input_sequence_length_avg
+  - name: output_sequence_length_p95
+    unit: tokens
+    description: output_sequence_length_p95
+  - name: output_sequence_length_avg
+    unit: tokens
+    description: output_sequence_length_avg
+# step 5: review distributed inference strategy
+  - name: fleet_e2e_latency_percentile
+    unit: milliseconds
+    description: fleet_e2e_latency_percentile
+  - name: fleet_inter_token_latency_percentile
+    unit: milliseconds
+    description: fleet_inter_token_latency_percentile
+  - name: fleet_request_success_rate
+    unit: requests per second
+    description: fleet_request_success_rate
+  - name: fleet_kv_cache_usage_avg
+    unit: percentage
+    description: fleet_kv_cache_usage_avg
+  - name: inter_token_latency_p95_5m
+    unit: milliseconds
+    description: inter_token_latency_p95_5m
+  - name: inter_token_latency_p95_max_per_pod
+    unit: milliseconds
+    description: inter_token_latency_p95_max_per_pod
+  - name: inter_token_latency_p95_min_per_pod
+    unit: milliseconds
+    description: inter_token_latency_p95_min_per_pod  

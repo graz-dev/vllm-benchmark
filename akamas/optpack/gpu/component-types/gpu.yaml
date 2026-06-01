@@ -1,0 +1,22 @@
+name: GPU
+description: GPU component type
+parameters: []
+
+metrics:
+# GPU utilization (DCGM-exporter) ---
+  - name: gpu_util
+  - name: gpu_sm_active
+  - name: gpu_sm_occupancy
+  - name: gpu_tensor_core_active
+  - name: gpu_dram_active
+  - name: gpu_fb_used
+  - name: gpu_fb_total
+  - name: gpu_power_usage
+  - name: gpu_power_limit
+  - name: gpu_temp
+  - name: gpu_memory_temp
+  - name: gpu_power_violation_rate
+  - name: gpu_thermal_violation_rate
+# advanced: non-tensor pipe activity (FP16 / FP32)
+  - name: gpu_fp16_pipe_active
+  - name: gpu_fp32_pipe_active
