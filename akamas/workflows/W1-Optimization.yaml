@@ -1,0 +1,39 @@
+kind: workflow
+
+name: W1-Optimization
+tasks:
+  - name: Write config
+    operator: FileConfigurator
+    arguments:
+      source:
+        hostname: toolbox
+        username: akamas
+        key: /home/davide/github/vllm-benchmark/akamas/workflows/id_rsa
+        path: /work/akamas/templates/01-deployment_template.yaml
+      target:
+        hostname: toolbox
+        username: akamas
+        key: /home/davide/github/vllm-benchmark/akamas/workflows/id_rsa  
+        path: /work/akamas/templates/01-deployment.yaml
+
+  - name: Apply config
+    operator: Executor
+    arguments:
+      retries: 0
+      timeout: 60m
+      host:
+        hostname: toolbox
+        username: akamas
+        key: /home/davide/github/vllm-benchmark/akamas/workflows/id_rsa  
+      command: bash /work/akamas/scripts/apply_config.sh
+
+  - name: RunTest
+    operator: Executor
+    arguments:
+      retries: 0
+      timeout: 120m
+      host:
+        hostname: toolbox
+        username: akamas
+        key: /home/davide/github/vllm-benchmark/akamas/workflows/id_rsa
+      command: bash /work/akamas/scripts/run_test.sh

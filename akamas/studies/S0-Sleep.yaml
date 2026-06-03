@@ -1,0 +1,18 @@
+kind: study
+
+name: S0-Sleep
+system: vLLM_Benchmark
+workflow: W0-Sleep
+
+goal:
+  objective: minimize
+  function:
+    formula: vLLM.e2e_request_latency_p95
+
+steps:
+  - name: baseline
+    type: baseline
+    numberOfTrials: 1
+  - name: optimize
+    type: optimize
+    numberOfExperiments: 100

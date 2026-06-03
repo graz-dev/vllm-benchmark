@@ -17,6 +17,7 @@ metrics:
   - name: gpu_memory_temp
   - name: gpu_power_violation_rate
   - name: gpu_thermal_violation_rate
+  - name: gpu_pcie_replay_rate
 # advanced: non-tensor pipe activity (FP16 / FP32)
   - name: gpu_fp16_pipe_active
   - name: gpu_fp32_pipe_active

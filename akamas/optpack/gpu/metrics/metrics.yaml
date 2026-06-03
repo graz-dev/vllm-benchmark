@@ -39,6 +39,9 @@ metrics:
   - name: gpu_thermal_violation_rate
     unit: violations per second
     description: GPU thermal violation rate
+  - name: gpu_pcie_replay_rate
+    unit: replays per second
+    description: GPU PCIe replay rate
 # advanced: non-tensor pipe activity (FP16 / FP32)
   - name: gpu_fp16_pipe_active
     unit: percent

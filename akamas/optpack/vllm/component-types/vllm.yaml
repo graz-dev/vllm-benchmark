@@ -1,5 +1,5 @@
-name: LLM
-description: LLM
+name: vLLM
+description: vLLM
 parameters: 
   - name: gpu_memory_utilization
     domain:

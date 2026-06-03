@@ -6,5 +6,5 @@ description: GPU component type
 componentType: GPU
 properties:
   prometheus:
-    pod: XXXX
-    gpu: YYYY
+    pod: .*
+    gpu: .*

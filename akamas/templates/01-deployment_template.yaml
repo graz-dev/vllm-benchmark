@@ -1,0 +1,114 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: llm-serving
+spec:
+  replicas: 1
+  # Recreate terminates the old pod before creating the new one.
+  # RollingUpdate (default) would deadlock here: the new pod waits for the GPU
+  # held by the old pod, which won't be killed until the new pod is ready.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
+    spec:
+      # Prevent Kubernetes from injecting service discovery env vars (e.g. VLLM_PORT=tcp://...)
+      # which conflict with vLLM's own VLLM_PORT variable and cause a crash on startup.
+      # See: https://docs.vllm.ai/en/stable/serving/env_vars.html
+      enableServiceLinks: false
+
+      # Pin to the GPU node group.
+      nodeSelector:
+        node-role: llm-serving
+
+      # Required to schedule on the tainted GPU node.
+      # operator: Exists matches the taint regardless of its value
+      # (covers both "nvidia.com/gpu:NoSchedule" and "nvidia.com/gpu=present:NoSchedule").
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+
+      containers:
+        - name: vllm
+          # Pin to a specific digest in production for reproducibility.
+          image: vllm/vllm-openai:v0.22.0
+          command: ["vllm", "serve"]
+          args:
+            # --- Active model ---
+            - "Qwen/Qwen2.5-7B-Instruct"
+            - "--served-model-name=qwen2.5-7b"
+            # --- To switch back to Llama (requires HF token + license approval): ---
+            # - "meta-llama/Meta-Llama-3.1-8B-Instruct"
+            # - "--served-model-name=llama-3.1-8b"
+            - "--gpu-memory-utilization=${vLLM.gpu_memory_utilization}"  # 24 GB × 0.90 = 21.6 GB reserved
+            - "--max-num-seqs=${vLLM.max_num_seqs}"
+            - "--max-num-batched-tokens=${vLLM.max_num_batched_tokens}"
+            - "--max-model-len=${vLLM.max_model_len}"
+            - "--dtype=bfloat16"
+            - "--port=8000"
+            - "--host=0.0.0.0"
+            - "--tensor-parallel-size=${vLLM.tensor_parallel_size}"       # single A10G
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          # env:                          # uncomment + add hf-token secret when switching to Llama
+          #   - name: HUGGING_FACE_HUB_TOKEN
+          #     valueFrom:
+          #       secretKeyRef:
+          #         name: hf-token
+          #         key: token
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+              cpu: "4"
+              memory: "16Gi"
+            limits:
+              nvidia.com/gpu: "1"
+              cpu: "8"
+              memory: "28Gi"
+
+          # Model loading takes 5-15 minutes on first start.
+          # startupProbe allows up to 10 minutes (60 × 10 s) before failing.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            failureThreshold: 60
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 30
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 60
+            failureThreshold: 3
+
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+            - name: model-cache
+              mountPath: /root/.cache/huggingface
+
+      volumes:
+        # vLLM uses shared memory for CUDA IPC handles between workers.
+        # Default /dev/shm (64 MB) is too small; allocate half of GPU VRAM.
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 12Gi
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: vllm-model-cache
