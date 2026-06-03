@@ -38,7 +38,7 @@ spec:
       containers:
         - name: vllm
           # Pin to a specific digest in production for reproducibility.
-          image: vllm/vllm-openai:latest
+          image: vllm/vllm-openai:v0.22.0
           command: ["vllm", "serve"]
           args:
             # --- Active model ---
