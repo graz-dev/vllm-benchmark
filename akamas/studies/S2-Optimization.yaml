@@ -1,0 +1,46 @@
+kind: study
+
+name: S2-Optimization
+system: vLLM_Benchmark
+workflow: W1-Optimization
+
+goal:
+  objective: maximize
+  function:
+    formula: vLLM.prefill_token_throughput + vLLM.decode_token_throughput
+  constraints:
+    absolute:
+      - name: Inter Token Latency
+        formula: vLLM.inter_token_latency_p95 <= 170
+
+windowing:
+  type: stability #type of windowing, in this case 'stability' 
+  stability:
+    metric: vLLM.prefill_token_throughput #akamas metric that must be stable in the window
+    width: 4 # windows width should be 5 samples
+    maxStdDev: 1000000000 # metric is stable if its standard deviation over the windows is < x
+    when:
+      metric: vLLM.prefill_token_throughput # select the window where FE.response_time is minimized
+      is: max
+
+parametersSelection:
+  - name: vLLM.gpu_memory_utilization
+    domain: [0.8, 0.95]
+  - name: vLLM.max_num_seqs
+    domain: [32, 512]
+  - name: vLLM.max_num_batched_tokens
+    domain: [512, 10240]
+
+steps:
+  - name: baseline
+    type: baseline
+    numberOfTrials: 2
+    values:
+      vLLM.gpu_memory_utilization: 0.9
+      vLLM.max_num_seqs: 256
+      vLLM.max_num_batched_tokens: 2048
+      vLLM.max_model_len: 32768
+      vLLM.tensor_parallel_size: 1
+  - name: optimize
+    type: optimize
+    numberOfExperiments: 100
