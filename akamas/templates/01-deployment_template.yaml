@@ -50,8 +50,8 @@ spec:
             - "--gpu-memory-utilization=${vLLM.gpu_memory_utilization}"  # 24 GB × 0.90 = 21.6 GB reserved
             - "--max-num-seqs=${vLLM.max_num_seqs}"
             - "--max-num-batched-tokens=${vLLM.max_num_batched_tokens}"
-            - "--max-model-len=${vLLM.max_model_len}"
-            - "--dtype=bfloat16"
+            #- "--max-model-len=${vLLM.max_model_len}"
+            #- "--dtype=bfloat16"
             - "--port=8000"
             - "--host=0.0.0.0"
             - "--tensor-parallel-size=${vLLM.tensor_parallel_size}"       # single A10G
