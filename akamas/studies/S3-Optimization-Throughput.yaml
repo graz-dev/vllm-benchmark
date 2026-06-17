@@ -1,0 +1,39 @@
+kind: study
+
+name: S3-Optimization-Throughput 
+system: vLLM_Benchmark
+workflow: W1-Optimization
+
+goal:
+  objective: maximize
+  function:
+    formula: vLLM.prefill_token_throughput + vLLM.decode_token_throughput
+
+windowing:
+ type: trim 
+ trim: [2m, 1m]
+ task: RunTest
+
+parametersSelection:
+  - name: vLLM.gpu_memory_utilization
+    domain: [0.8, 0.95]
+  - name: vLLM.max_num_seqs
+    domain: [32, 512]
+  - name: vLLM.max_num_batched_tokens
+    domain: [512, 10240]
+
+steps:
+  - name: baseline
+    type: baseline
+    numberOfTrials: 1
+    values:
+      vLLM.gpu_memory_utilization: 0.9
+      vLLM.max_num_seqs: 256
+      vLLM.max_num_batched_tokens: 4096
+      vLLM.tensor_parallel_size: 1
+      vLLM.max_model_len: 32768
+  
+  - name: optimize
+    type: optimize
+    numberOfExperiments: 1000
+    maxFailedExperiments: 1000
