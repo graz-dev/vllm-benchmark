@@ -8,13 +8,13 @@ tasks:
       source:
         hostname: toolbox
         username: akamas
-        key: /work/vllm-benchmark/akamas/workflows/id_rsa
-        path: /work/vllm-benchmark/akamas/templates/01-deployment_template.yaml
+        key: /home/davide/github/vllm-benchmark/akamas/workflows/id_rsa
+        path: /work/akamas/templates/01-deployment_template.yaml
       target:
         hostname: toolbox
         username: akamas
-        key: /work/vllm-benchmark/akamas/workflows/id_rsa  
-        path: /work/vllm-benchmark/akamas/templates/01-deployment.yaml
+        key: /home/davide/github/vllm-benchmark/akamas/workflows/id_rsa  
+        path: /work/akamas/templates/01-deployment.yaml
 
   - name: Apply config
     operator: Executor
@@ -24,8 +24,8 @@ tasks:
       host:
         hostname: toolbox
         username: akamas
-        key: /work/vllm-benchmark/akamas/workflows/id_rsa  
-      command: bash /work/vllm-benchmark/akamas/scripts/apply_config.sh
+        key: /home/davide/github/vllm-benchmark/akamas/workflows/id_rsa  
+      command: bash /work/akamas/scripts/apply_config.sh
 
   - name: RunTest
     operator: Executor
@@ -35,5 +35,5 @@ tasks:
       host:
         hostname: toolbox
         username: akamas
-        key: /work/vllm-benchmark/akamas/workflows/id_rsa
-      command: bash /work/vllm-benchmark/akamas/scripts/run_test.sh
+        key: /home/davide/github/vllm-benchmark/akamas/workflows/id_rsa
+      command: bash /work/akamas/scripts/run_test.sh

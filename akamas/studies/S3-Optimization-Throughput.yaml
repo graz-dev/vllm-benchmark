@@ -2,7 +2,7 @@ kind: study
 
 name: S3-Optimization-Throughput 
 system: vLLM_Benchmark
-workflow: W1-Optimization
+workflow: W2-Optimization_THR
 
 goal:
   objective: maximize
