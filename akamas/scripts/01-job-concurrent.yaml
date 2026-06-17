@@ -1,0 +1,86 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: guidellm-benchmark
+  namespace: llm-benchmark
+spec:
+  # Do not retry on failure — a failed benchmark should be inspected, not silently retried.
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+
+      # Run on the CPU node; the GPU node is tainted exclusively for vLLM.
+      nodeSelector:
+        node-role: system
+
+      # Allow the GuideLLM container to write results to the PVC.
+      # The default GuideLLM image runs as a non-root user; without fsGroup
+      # the mounted volume is owned by root and not writable.
+      securityContext:
+        fsGroup: 0
+        runAsUser: 0
+
+      initContainers:
+        # Poll vLLM's /health endpoint until the model is fully loaded.
+        # Model loading can take 5-15 minutes; this prevents a race condition
+        # where GuideLLM starts sending requests before vLLM is ready.
+        - name: wait-for-vllm
+          image: alpine:3
+          command:
+            - sh
+            - -c
+            - |
+              until wget -qO- http://vllm.llm-serving.svc.cluster.local:8000/health >/dev/null 2>&1; do
+                echo "$(date -u +%T) waiting for vLLM readiness..."
+                sleep 10
+              done
+              echo "vLLM is ready."
+
+      containers:
+        - name: guidellm
+          image: ghcr.io/neuralmagic/guidellm:latest
+          env:
+            # Required to download the tokenizer and the benchmark dataset from HuggingFace
+            # at full authenticated speed.
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+          command:
+            - guidellm
+            - benchmark
+            - --target
+            - "http://vllm.llm-serving.svc.cluster.local:8000/v1"
+            - --model
+            - "qwen2.5-7b"
+            # - "llama-3.1-8b"       # uncomment if switched to Llama
+            - --data
+            - "prompt_tokens=512,output_tokens=128"
+            - --processor
+            - "Qwen/Qwen2.5-7B-Instruct"
+            - --rate-type
+            - concurrent
+            - --rate
+            - "100"
+              #- --detect-saturation
+            - --max-seconds
+            - "300"
+            - --output-path
+            - /benchmarks
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+          volumeMounts:
+            - name: results
+              mountPath: /benchmarks
+
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: guidellm-result
