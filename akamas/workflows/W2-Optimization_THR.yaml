@@ -36,4 +36,4 @@ tasks:
         hostname: toolbox
         username: akamas
         key: /work/vllm-benchmark/akamas/workflows/id_rsa
-      command: bash /work/vllm-benchmark/akamas/scripts/run_test.sh
+      command: bash /work/vllm-benchmark/akamas/scripts/run_test_throughput.sh
