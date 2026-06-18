@@ -18,12 +18,13 @@ tolerations:
     operator: Exists
     effect: NoSchedule
 
-# Let Prometheus (via kube-prometheus-stack) scrape DCGM metrics every 15 s.
+# Let Prometheus (via kube-prometheus-stack) scrape DCGM metrics every 5 s.
 # serviceMonitorSelectorNilUsesHelmValues: false in prometheus values ensures
 # this ServiceMonitor is picked up without needing extra labels.
 serviceMonitor:
   enabled: true
-  interval: 15s
+  interval: 5s
+  scrapeTimeout: 4s
   namespace: monitoring
 
 extraConfigMapVolumes:

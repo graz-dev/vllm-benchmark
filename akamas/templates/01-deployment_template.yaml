@@ -55,6 +55,7 @@ spec:
             - "--port=8000"
             - "--host=0.0.0.0"
             - "--tensor-parallel-size=${vLLM.tensor_parallel_size}"       # single A10G
+            - "--enable-mfu-metrics"
           ports:
             - name: http
               containerPort: 8000
