@@ -63,7 +63,7 @@ spec:
             - --rate-type
             - throughput          # find maximum sustainable throughput
             - --max-seconds
-            - "600"               # run for 10 minutes to reach and measure steady state
+            - "900"               # run for 10 minutes to reach and measure steady state
             - --output-path
             - /benchmarks
           resources:

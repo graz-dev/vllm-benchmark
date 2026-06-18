@@ -11,7 +11,7 @@ goal:
 
 windowing:
  type: trim 
- trim: [2m, 1m]
+ trim: [5m, 1m]
  task: RunTest
 
 parametersSelection:
