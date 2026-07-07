@@ -6,7 +6,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: gp3
+  storageClassName: gp3-ephemeral
   resources:
     requests:
       storage: 25Gi
