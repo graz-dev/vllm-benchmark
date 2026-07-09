@@ -20,8 +20,10 @@ a natural next study once this one shows the throughput/latency Pareto shape).
 ## Stack & versions
 
 - **Akamas version:** 3.7.x
-- **Optimization pack(s) used:** vLLM **1.2.0** (https://gitlab.com/akamas/optimization-packs/vllm,
-  tag `1.2.0`). GPU pack: name/metrics assumed unchanged from this repo's pre-restructure
+- **Optimization pack(s) used:** vLLM **1.3.0** (https://gitlab.com/akamas/optimization-packs/vllm,
+  branch `feature/attention-backend-and-block-size-categorical` at the time of writing —
+  started from tag `1.2.0`, see "Pack update" below for what changed and why). GPU pack:
+  name/metrics assumed unchanged from this repo's pre-restructure
   setup (metrics-only, no tunable parameters) — **not verified against a live source for
   this study, see "Assumptions to verify" below.** Kubernetes pack: stock `Kubernetes
   Container` component type, no properties needed.
@@ -41,7 +43,7 @@ a natural next study once this one shows the throughput/latency Pareto shape).
 
 ## Parameters tuned
 
-16 of the pack's 25 vLLM parameters are searched; 8 are pinned to fixed values (single
+17 of the pack's 26 vLLM parameters are searched; 8 are pinned to fixed values (single
 GPU, non-MoE model, or an unsupported feature — see below); 1 (`compilation_mode`) is
 deliberately excluded — see notes below the table.
 
@@ -54,7 +56,6 @@ deliberately excluded — see notes below the table.
 | `vLLM.kv_cache_dtype` | auto, fp8, fp8_e4m3, fp8_e5m2 | auto |
 | `vLLM.performance_mode` | balanced, interactivity, throughput | balanced |
 | `vLLM.optimization_level` | [0, 3] | 2 |
-| `vLLM.block_size` | [8, 128] | 16 |
 | `vLLM.dtype` | auto, float16, bfloat16 | auto |
 | `vLLM.enforce_eager` | true, false | false |
 | `vLLM.scheduling_policy` | fcfs, priority | fcfs |
@@ -63,6 +64,8 @@ deliberately excluded — see notes below the table.
 | `vLLM.tokenizer_mode` | auto, hf, slow | auto |
 | `vLLM.async_scheduling` | true, false | true |
 | `vLLM.max_cudagraph_capture_size` | [1, 1024] | 256 |
+| `vLLM.block_size` | 16, 32, 64 | 16 |
+| `vLLM.attention_backend` | FLASH_ATTN, FLASHINFER, TRITON_ATTN | FLASH_ATTN |
 
 Pinned (not in `parametersSelection`, fixed for every trial via the baseline step):
 
@@ -76,6 +79,12 @@ Pinned (not in `parametersSelection`, fixed for every trial via the baseline ste
 | `vLLM.max_num_partial_prefills` | 1 | **Moved here 2026-07-09, after the study had already run experiments** — "Concurrent Partial Prefill" (any value > 1) is not supported on this vLLM 0.22.0 / A10G combo. See "Incident: Concurrent Partial Prefill crash" below. |
 | `vLLM.max_long_partial_prefills` | 1 | Same incident — only meaningful when `max_num_partial_prefills > 1`. |
 | `vLLM.long_prefill_token_threshold` | 0 | Same incident — same reason (0 = disabled, matches vLLM's own default). |
+
+`vLLM.block_size` was pinned too (2026-07-09, "Incident: invalid block_size" below), but
+**moved back to tunable on 2026-07-09** once the pack itself was fixed (see "Pack update"
+below): it's now categorical `[16, 32, 64]` — the intersection of values valid across all
+three `attention_backend` options, chosen specifically so no sampled
+`(attention_backend, block_size)` pair can ever be invalid.
 
 **Excluded entirely** (not in `parametersSelection`, not pinned, not referenced by the
 deployment template at all): `vLLM.compilation_mode`. Verified against vLLM's own source
@@ -149,12 +158,92 @@ disabled chunked/concurrent-prefill feature). The study needs to be re-created o
 (delete + recreate, or whatever update path the user's Akamas version supports for a
 `parametersSelection` change) before resuming.
 
+### Incident: invalid `block_size` crash (2026-07-09, same day)
+
+After the fix above, experiments were still crashing — same symptom
+(`ProgressDeadlineExceeded` / `CrashLoopBackOff`), different cause. Pod logs
+(`kubectl logs <pod> -n llm-serving --previous`) showed the engine core itself dying
+during startup:
+
+```
+ValueError: No valid attention backend found for cuda with
+AttentionSelectorConfig(head_size=128, dtype=torch.bfloat16, kv_cache_dtype=fp8,
+block_size=106, ...). Reasons: {FLASH_ATTN: [kv_cache_dtype not supported,
+block_size not supported], FLASHINFER: [block_size not supported], TRITON_ATTN:
+[block_size not supported], FLEX_ATTENTION: [kv_cache_dtype not supported,
+block_size not supported], TURBOQUANT: [kv_cache_dtype not supported,
+block_size not supported]}
+```
+
+The failing experiment had sampled `block_size=106`. Checked directly against vLLM
+0.22.0's attention backend source
+(`vllm/v1/attention/backends/{flash_attn,triton_attn,flashinfer}.py`):
+`FlashAttentionBackend.get_supported_kernel_block_sizes()` returns `MultipleOf(16)`,
+`FlashInferBackend`'s returns exactly `[16, 32, 64]` — **every backend requires
+`block_size` to be a multiple of 16** (FlashInfer even more restrictive), but the pack
+declares it as a plain integer over `[1, 128]` with no such constraint, and Akamas'
+integer domain has no "multiple of" or step mechanism to express it. `block_size=106`
+(not a multiple of 16) is therefore rejected by literally every backend regardless of
+any other parameter.
+
+This also explains why `kv_cache_dtype=fp8` looked incompatible in the error: it isn't —
+`FlashAttentionBackend.supported_kv_cache_dtypes` excludes fp8, but
+`TritonAttentionBackend`/`FlashInferBackend` both explicitly support
+`fp8`/`fp8_e4m3`/`fp8_e5m2`. With `block_size=106`, though, *none* of them qualify, fp8 or
+not — the block size alone was sufficient to fail every backend. `kv_cache_dtype` itself
+needed no change.
+
+**Fix applied the same way as the incident above**: `block_size` moved out of
+`parametersSelection`, pinned to `16` (vLLM's own default, a valid multiple of 16 for
+every backend) in the baseline step's `values`.
+
+**Residual risk**: only `block_size` was checked against source for this
+multiple-of/discrete-value class of constraint; the remaining tunable integer parameters
+(`max_num_seqs`, `max_num_batched_tokens`, `max_model_len`, `max_cudagraph_capture_size`)
+are assumed to accept arbitrary integers in their domain (consistent with what their own
+vLLM source comments describe — memory/performance knobs, not backend-capability
+enums) but were not each individually source-verified the way `block_size` now has been.
+If another 100%-reproducible crash appears, check that parameter's own vLLM source next
+before assuming it's another one-off bad sample.
+
+### Pack update: `attention_backend` + fixed `block_size` (2026-07-09, pack v1.3.0)
+
+Rather than leave `block_size` permanently pinned, the root cause was fixed at the
+source: the vLLM optimization pack itself
+(https://gitlab.com/akamas/optimization-packs/vllm, branch
+`feature/attention-backend-and-block-size-categorical`, not yet merged) was updated to
+`version: 1.3.0`:
+
+- **`block_size`** changed from a free `integer [1, 128]` to `categorical [16, 32, 64]`
+  — the values valid across all three CUDA attention backends this pack now exposes.
+- **`attention_backend`** added as a new categorical parameter (`FLASH_ATTN`,
+  `FLASHINFER`, `TRITON_ATTN`), mapping to vLLM's real `--attention-backend` flag, so the
+  backend itself is now an explicit, tunable/pinnable choice instead of relying on
+  vLLM's own auto-selection (the mechanism that made the original crash possible: silent
+  fallthrough to "no valid backend" instead of a validation error at config time).
+
+`block_size=16 × attention_backend∈{FLASH_ATTN,FLASHINFER,TRITON_ATTN}` and
+`block_size∈{16,32,64} × attention_backend=FLASHINFER` are both fully valid — `{16, 32,
+64}` was chosen deliberately as the *intersection* of what all three backends accept
+(FlashInfer is the strictest, accepting only those three; FlashAttention/TritonAttention
+would each individually also accept 48/80/96/112/128, but widening beyond the
+intersection would require either dropping FlashInfer from `attention_backend`'s
+categories or accepting a bounded, known failure rate — deliberately not done here to
+keep this parameter pair 100% failure-free).
+
+`block_size` is therefore **back in `parametersSelection`** as categorical, and
+`attention_backend` is newly added — see the "Parameters tuned" table above. This
+requires the pack to actually be built and installed/upgraded (`akamas build
+optimization-pack` → `akamas install -f optimization-pack`) on the target Akamas
+instance from that branch **before** re-creating this study, or `vLLM.attention_backend`/
+the new `block_size` categories won't resolve.
+
 ## How to run
 
 **1. Prerequisites (one-time, before creating anything below):**
 
 ```bash
-# confirm the vLLM pack 1.2.0 is installed on the target Akamas instance
+# confirm the vLLM pack 1.3.0 (with attention_backend + fixed block_size) is installed
 akamas list optimization-pack
 
 # apply the two PVCs by hand — not part of the workflow, see "Assumptions to verify" #6

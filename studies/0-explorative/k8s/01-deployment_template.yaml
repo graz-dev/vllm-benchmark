@@ -56,6 +56,7 @@ spec:
             - "--performance-mode=${vLLM.performance_mode}"
             - "--optimization-level=${vLLM.optimization_level}"
             - "--block-size=${vLLM.block_size}"
+            - "--attention-backend=${vLLM.attention_backend}"
             - "--dtype=${vLLM.dtype}"
             - "--enforce-eager=${vLLM.enforce_eager}"
             - "--scheduling-policy=${vLLM.scheduling_policy}"

@@ -29,8 +29,6 @@ parametersSelection:
     categories: [balanced, interactivity, throughput]
   - name: vLLM.optimization_level
     domain: [0, 3]
-  - name: vLLM.block_size
-    domain: [8, 128]
   - name: vLLM.dtype
     categories: [auto, float16, bfloat16]
   - name: vLLM.enforce_eager
@@ -47,6 +45,10 @@ parametersSelection:
     categories: ["true", "false"]
   - name: vLLM.max_cudagraph_capture_size
     domain: [1, 1024]
+  - name: vLLM.block_size
+    categories: ["16", "32", "64"]
+  - name: vLLM.attention_backend
+    categories: [FLASH_ATTN, FLASHINFER, TRITON_ATTN]
 
 steps:
   - name: baseline
@@ -61,7 +63,6 @@ steps:
       vLLM.kv_cache_dtype: auto
       vLLM.performance_mode: balanced
       vLLM.optimization_level: 2
-      vLLM.block_size: 16
       vLLM.dtype: auto
       vLLM.enforce_eager: "false"
       vLLM.scheduling_policy: fcfs
@@ -70,6 +71,8 @@ steps:
       vLLM.tokenizer_mode: auto
       vLLM.async_scheduling: "true"
       vLLM.max_cudagraph_capture_size: 256
+      vLLM.block_size: "16"
+      vLLM.attention_backend: FLASH_ATTN
       # --- Pinned (single A10G, non-MoE model — not in parametersSelection) ---
       vLLM.tensor_parallel_size: 1
       vLLM.pipeline_parallel_size: 1
