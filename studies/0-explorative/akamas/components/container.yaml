@@ -1,0 +1,6 @@
+kind: component
+system: vLLM_Benchmark_0_Explorative
+
+name: container
+description: Container component type
+componentType: Kubernetes Container

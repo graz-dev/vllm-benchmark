@@ -1,0 +1,19 @@
+# Secrets — never commit these (see ROADMAP.md security debt: _old/akamas/workflows/id_rsa
+# was a real committed private key).
+# id_rsa
+# id_rsa.*
+# id_dsa
+# id_dsa.*
+*.pem
+*.key
+!k8s/**/*.key.yaml
+.env
+.env.*
+**/hf-token*
+!**/hf-token*.yaml
+
+# Local Claude Code settings
+.claude/settings.local.json
+
+# Private original knowledge sources 
+knowledge/sources

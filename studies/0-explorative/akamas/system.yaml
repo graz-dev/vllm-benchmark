@@ -1,0 +1,4 @@
+kind: system
+
+name: vLLM_Benchmark_0_Explorative
+description: Benchmark and optimization for the 0-explorative study (Qwen2.5-7B-Instruct on a single A10G, vLLM optimization pack 1.2.0)

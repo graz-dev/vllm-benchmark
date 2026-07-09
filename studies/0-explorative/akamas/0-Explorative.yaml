@@ -1,0 +1,92 @@
+kind: study
+
+name: 0-Explorative
+system: vLLM_Benchmark_0_Explorative
+workflow: 0-Explorative-Workflow
+
+goal:
+  objective: maximize
+  function:
+    formula: vLLM.prefill_token_throughput + vLLM.decode_token_throughput
+
+windowing:
+  type: trim
+  trim: [5m, 1m]
+  task: RunTest
+
+parametersSelection:
+  - name: vLLM.gpu_memory_utilization
+    domain: [0.5, 0.95]
+  - name: vLLM.max_num_seqs
+    domain: [16, 1024]
+  - name: vLLM.max_num_batched_tokens
+    domain: [256, 8192]
+  - name: vLLM.max_model_len
+    domain: [2048, 32768]
+  - name: vLLM.kv_cache_dtype
+    categories: [auto, fp8, fp8_e4m3, fp8_e5m2]
+  - name: vLLM.max_num_partial_prefills
+    domain: [1, 8]
+  - name: vLLM.max_long_partial_prefills
+    domain: [1, 8]
+  - name: vLLM.long_prefill_token_threshold
+    domain: [0, 8192]
+  - name: vLLM.performance_mode
+    categories: [balanced, interactivity, throughput]
+  - name: vLLM.optimization_level
+    domain: [0, 3]
+  - name: vLLM.block_size
+    domain: [8, 128]
+  - name: vLLM.dtype
+    categories: [auto, float16, bfloat16]
+  - name: vLLM.enforce_eager
+    categories: ["true", "false"]
+  - name: vLLM.scheduling_policy
+    categories: [fcfs, priority]
+  - name: vLLM.prefix_caching_hash_algo
+    categories: [sha256, sha256_cbor]
+  - name: vLLM.disable_cascade_attn
+    categories: ["true", "false"]
+  - name: vLLM.tokenizer_mode
+    categories: [auto, hf, slow]
+  - name: vLLM.async_scheduling
+    categories: ["true", "false"]
+  - name: vLLM.max_cudagraph_capture_size
+    domain: [1, 1024]
+
+steps:
+  - name: baseline
+    type: baseline
+    numberOfTrials: 1
+    values:
+      # --- Tuned (parametersSelection) — pack defaults ---
+      vLLM.gpu_memory_utilization: 0.92
+      vLLM.max_num_seqs: 128
+      vLLM.max_num_batched_tokens: 2048
+      vLLM.max_model_len: 32768
+      vLLM.kv_cache_dtype: auto
+      vLLM.max_num_partial_prefills: 1
+      vLLM.max_long_partial_prefills: 1
+      vLLM.long_prefill_token_threshold: 0
+      vLLM.performance_mode: balanced
+      vLLM.optimization_level: 2
+      vLLM.block_size: 16
+      vLLM.dtype: auto
+      vLLM.enforce_eager: "false"
+      vLLM.scheduling_policy: fcfs
+      vLLM.prefix_caching_hash_algo: sha256
+      vLLM.disable_cascade_attn: "true"
+      vLLM.tokenizer_mode: auto
+      vLLM.async_scheduling: "true"
+      vLLM.max_cudagraph_capture_size: 256
+      # --- Pinned (single A10G, non-MoE model — not in parametersSelection) ---
+      vLLM.tensor_parallel_size: 1
+      vLLM.pipeline_parallel_size: 1
+      vLLM.data_parallel_size: 1
+      vLLM.enable_expert_parallel: "false"
+      vLLM.disable_custom_all_reduce: "false"
+
+  - name: optimize
+    type: optimize
+    numberOfExperiments: 1000
+    maxFailedExperiments: 200

@@ -1,0 +1,39 @@
+kind: workflow
+
+name: 0-Explorative-Workflow
+tasks:
+  - name: Write config
+    operator: FileConfigurator
+    arguments:
+      source:
+        hostname: toolbox
+        username: akamas
+        key: /work/vllm-benchmark/studies/0-explorative/akamas/id_rsa
+        path: /work/vllm-benchmark/studies/0-explorative/k8s/01-deployment_template.yaml
+      target:
+        hostname: toolbox
+        username: akamas
+        key:  /work/vllm-benchmark/studies/0-explorative/akamas/id_rsa
+        path: /work/vllm-benchmark/studies/0-explorative/k8s/01-deployment.yaml
+
+  - name: Apply config
+    operator: Executor
+    arguments:
+      retries: 0
+      timeout: 60m
+      host:
+        hostname: toolbox
+        username: akamas
+        key:  /work/vllm-benchmark/studies/0-explorative/akamas/id_rsa
+      command: bash /work/vllm-benchmark/studies/0-explorative/k8s/apply_config.sh
+
+  - name: RunTest
+    operator: Executor
+    arguments:
+      retries: 0
+      timeout: 120m
+      host:
+        hostname: toolbox
+        username: akamas
+        key:  /work/vllm-benchmark/studies/0-explorative/akamas/id_rsa
+      command: bash /work/vllm-benchmark/studies/0-explorative/k8s/run_test_throughput.sh
