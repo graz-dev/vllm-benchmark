@@ -120,6 +120,46 @@ set both to 1000 and — per the `akamas-study-manager` plugin's own schema
 reference — silently disabled the failure guard). 200 gives headroom for the expected
 failure sources above while keeping the guard actually active.
 
+## How to run
+
+**1. Prerequisites (one-time, before creating anything below):**
+
+```bash
+# confirm the vLLM pack 1.2.0 is installed on the target Akamas instance
+akamas list optimization-pack
+
+# apply the two PVCs by hand — not part of the workflow, see "Assumptions to verify" #6
+kubectl apply -f studies/0-explorative/k8s/00-pvc.yaml             # guidellm-results, ns llm-benchmark
+kubectl apply -f studies/0-explorative/k8s/01-pvc-model-cache.yaml # vllm-model-cache, ns llm-serving
+```
+
+**2. Create the Akamas resources** (typed form, one command per file — safer ordering):
+
+```bash
+akamas create system                studies/0-explorative/akamas/system.yaml
+
+akamas create component             studies/0-explorative/akamas/components/container.yaml "vLLM_Benchmark_0_Explorative"
+akamas create component             studies/0-explorative/akamas/components/gpu.yaml       "vLLM_Benchmark_0_Explorative"
+akamas create component             studies/0-explorative/akamas/components/vllm.yaml      "vLLM_Benchmark_0_Explorative"
+
+akamas create telemetry-instance    studies/0-explorative/akamas/telemetry/prometheus.yaml "vLLM_Benchmark_0_Explorative"
+
+akamas create workflow              studies/0-explorative/akamas/0-Explorative-Workflow.yaml
+akamas create study                 studies/0-explorative/akamas/0-Explorative.yaml
+```
+
+Or in one shot (bulk form — every file self-describes its `kind:`):
+
+```bash
+akamas create -f studies/0-explorative/akamas/
+```
+
+**3. Start:**
+
+```bash
+akamas start study "0-Explorative"
+```
+
 ## Assumptions to verify before running
 
 1. ~~Boolean CLI flag syntax~~ — **confirmed and fixed.** vLLM's boolean CLI flags
