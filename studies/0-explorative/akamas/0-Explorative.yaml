@@ -25,12 +25,6 @@ parametersSelection:
     domain: [2048, 32768]
   - name: vLLM.kv_cache_dtype
     categories: [auto, fp8, fp8_e4m3, fp8_e5m2]
-  - name: vLLM.max_num_partial_prefills
-    domain: [1, 8]
-  - name: vLLM.max_long_partial_prefills
-    domain: [1, 8]
-  - name: vLLM.long_prefill_token_threshold
-    domain: [0, 8192]
   - name: vLLM.performance_mode
     categories: [balanced, interactivity, throughput]
   - name: vLLM.optimization_level
@@ -65,9 +59,6 @@ steps:
       vLLM.max_num_batched_tokens: 2048
       vLLM.max_model_len: 32768
       vLLM.kv_cache_dtype: auto
-      vLLM.max_num_partial_prefills: 1
-      vLLM.max_long_partial_prefills: 1
-      vLLM.long_prefill_token_threshold: 0
       vLLM.performance_mode: balanced
       vLLM.optimization_level: 2
       vLLM.block_size: 16
@@ -85,6 +76,10 @@ steps:
       vLLM.data_parallel_size: 1
       vLLM.enable_expert_parallel: "false"
       vLLM.disable_custom_all_reduce: "false"
+      # --- Pinned (Concurrent Partial Prefill unsupported on this vLLM/GPU combo — see README) ---
+      vLLM.max_num_partial_prefills: 1
+      vLLM.max_long_partial_prefills: 1
+      vLLM.long_prefill_token_threshold: 0
 
   - name: optimize
     type: optimize

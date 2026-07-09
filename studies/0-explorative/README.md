@@ -41,9 +41,9 @@ a natural next study once this one shows the throughput/latency Pareto shape).
 
 ## Parameters tuned
 
-19 of the pack's 25 vLLM parameters are searched; 5 are pinned to fixed values (single
-GPU, non-MoE model); 1 (`compilation_mode`) is deliberately excluded — see notes below
-the table.
+16 of the pack's 25 vLLM parameters are searched; 8 are pinned to fixed values (single
+GPU, non-MoE model, or an unsupported feature — see below); 1 (`compilation_mode`) is
+deliberately excluded — see notes below the table.
 
 | Parameter | Domain / categories | Baseline |
 |---|---|---|
@@ -52,9 +52,6 @@ the table.
 | `vLLM.max_num_batched_tokens` | [256, 8192] | 2048 |
 | `vLLM.max_model_len` | [2048, 32768] | 32768 |
 | `vLLM.kv_cache_dtype` | auto, fp8, fp8_e4m3, fp8_e5m2 | auto |
-| `vLLM.max_num_partial_prefills` | [1, 8] | 1 |
-| `vLLM.max_long_partial_prefills` | [1, 8] | 1 |
-| `vLLM.long_prefill_token_threshold` | [0, 8192] | 0 |
 | `vLLM.performance_mode` | balanced, interactivity, throughput | balanced |
 | `vLLM.optimization_level` | [0, 3] | 2 |
 | `vLLM.block_size` | [8, 128] | 16 |
@@ -76,6 +73,9 @@ Pinned (not in `parametersSelection`, fixed for every trial via the baseline ste
 | `vLLM.data_parallel_size` | 1 | Only one GPU available. |
 | `vLLM.enable_expert_parallel` | false | Qwen2.5-7B is dense, not MoE; irrelevant. |
 | `vLLM.disable_custom_all_reduce` | false (pack default) | Per the pack's own description, only relevant when `tensor_parallel_size > 1`; a no-op at TP=1, not worth spending optimizer budget on. |
+| `vLLM.max_num_partial_prefills` | 1 | **Moved here 2026-07-09, after the study had already run experiments** — "Concurrent Partial Prefill" (any value > 1) is not supported on this vLLM 0.22.0 / A10G combo. See "Incident: Concurrent Partial Prefill crash" below. |
+| `vLLM.max_long_partial_prefills` | 1 | Same incident — only meaningful when `max_num_partial_prefills > 1`. |
+| `vLLM.long_prefill_token_threshold` | 0 | Same incident — same reason (0 = disabled, matches vLLM's own default). |
 
 **Excluded entirely** (not in `parametersSelection`, not pinned, not referenced by the
 deployment template at all): `vLLM.compilation_mode`. Verified against vLLM's own source
@@ -109,16 +109,45 @@ where possible:
 - **`vLLM.kv_cache_dtype`** keeps the full `fp8`/`fp8_e4m3`/`fp8_e5m2` range even though
   FP8 KV-cache support on an Ampere-generation A10G is unconfirmed — some experiments may
   legitimately fail here; accepted, see `maxFailedExperiments` below.
-- **`vLLM.max_long_partial_prefills` vs. `vLLM.max_num_partial_prefills`**: per
-  `vllm/config/scheduler.py`, vLLM raises a `ValueError` at startup if
-  `max_long_partial_prefills > max_num_partial_prefills`. Akamas has no cross-parameter
-  domain constraint mechanism, so some sampled combinations will violate this and fail —
-  accepted, not solved.
 
 `maxFailedExperiments: 200` (not equal to `numberOfExperiments: 1000`, unlike S3.1 which
 set both to 1000 and — per the `akamas-study-manager` plugin's own schema
 reference — silently disabled the failure guard). 200 gives headroom for the expected
 failure sources above while keeping the guard actually active.
+
+### Incident: Concurrent Partial Prefill crash (2026-07-09)
+
+Every experiment except the baseline was failing at the `Apply config` workflow task
+(`kubectl rollout status` hitting `ProgressDeadlineExceeded`, pod in `CrashLoopBackOff`).
+Direct inspection of the pod logs (`kubectl logs <pod> -n llm-serving --previous`) showed
+the real cause — not the boolean-flag issue flagged earlier (that fix, confirmed working:
+`disable_cascade_attn`/`async_scheduling` etc. show up correctly parsed as real booleans
+in vLLM's own "non-default args" log line) — but this, immediately after argument
+parsing succeeds:
+
+```
+NotImplementedError: Concurrent Partial Prefill is not supported. We recommend to
+remove Concurrent Partial Prefill from your config.
+```
+
+i.e. `max_num_partial_prefills > 1` — "Concurrent Partial Prefill" — is rejected outright
+by vLLM 0.22.0 on this GPU/backend combination, regardless of the exact value. Since the
+parameter's tuned domain was `[1, 8]`, essentially every sampled experiment (any value
+other than exactly 1) crashed immediately; only the baseline (which pins it to 1)
+survived. This is a harder incompatibility than the "some combinations may fail" risks
+already anticipated for `kv_cache_dtype`/FP8 — it's a 100%-reproducible failure for any
+non-default value, not an occasional one.
+
+**Fix applied directly to this already-running study** (`studies/0-explorative/akamas/0-Explorative.yaml`),
+deliberately deviating from `.claude/rules/akamas-yaml.md`'s normal rule ("changing
+`parametersSelection` on a study that has already run experiments requires a new study")
+— done by explicit user decision after the user manually stopped the study first, rather
+than scaffolding a v2: moved `max_num_partial_prefills`, `max_long_partial_prefills`, and
+`long_prefill_token_threshold` out of `parametersSelection` and into the baseline step's
+pinned `values` (all three "off": `1`, `1`, `0` — matching vLLM's own defaults for a
+disabled chunked/concurrent-prefill feature). The study needs to be re-created on Akamas
+(delete + recreate, or whatever update path the user's Akamas version supports for a
+`parametersSelection` change) before resuming.
 
 ## How to run
 

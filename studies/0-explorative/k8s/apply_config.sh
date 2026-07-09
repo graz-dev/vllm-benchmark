@@ -13,4 +13,19 @@ for flag in enforce-eager disable-cascade-attn async-scheduling enable-expert-pa
 done
 
 kubectl apply -f "$DEPLOY_FILE" -n llm-serving
+
+# Don't let a failed rollout exit immediately — print vLLM's own container logs first,
+# so they land in this task's stdout and show up in the Akamas UI (experiment/trial
+# view) without needing separate kubectl access. This is exactly the log that would
+# have shown the "Concurrent Partial Prefill" NotImplementedError directly in Akamas.
+set +e
 kubectl rollout status deployment/vllm -n llm-serving --timeout=1200s
+ROLLOUT_EXIT=$?
+set -e
+
+echo "--- vLLM container logs (current pod) ---"
+kubectl logs deployment/vllm -n llm-serving --tail=200 || true
+echo "--- vLLM container logs (previous pod, if it crashed and restarted) ---"
+kubectl logs deployment/vllm -n llm-serving --tail=200 --previous 2>/dev/null || true
+
+exit $ROLLOUT_EXIT
