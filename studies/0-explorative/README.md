@@ -49,7 +49,7 @@ deliberately excluded — see notes below the table.
 
 | Parameter | Domain / categories | Baseline |
 |---|---|---|
-| `vLLM.gpu_memory_utilization` | [0.5, 0.95] | 0.92 |
+| `vLLM.gpu_memory_utilization` | [0.85, 0.95] | 0.92 |
 | `vLLM.max_num_seqs` | [16, 1024] | 128 |
 | `vLLM.max_num_batched_tokens` | [256, 8192] | 2048 |
 | `vLLM.max_model_len` | [2048, 32768] | 32768 |
@@ -140,6 +140,10 @@ parameterConstraints:
     formula: vLLM.attention_backend != "FLASHINFER" || vLLM.block_size == "16" || vLLM.block_size == "32" || vLLM.block_size == "64"
   - name: max_num_batched_tokens must be at least max_num_seqs
     formula: vLLM.max_num_batched_tokens >= vLLM.max_num_seqs
+  - name: TRITON_ATTN does not support fp8 kv_cache_dtype on Ampere
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8"
+  - name: TRITON_ATTN does not support fp8_e4m3 kv_cache_dtype on Ampere
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e4m3"
 ```
 
 The first two were found the hard way, from real crashed experiments (see the incidents
@@ -167,18 +171,23 @@ meaningful fraction of otherwise-valid-looking samples would have violated this 
 `max_num_batched_tokens=512` with `max_num_seqs=700` — without ever needing the fp8 or
 FlashInfer conditions above.
 
-**Not yet added, deliberately**: a constraint for the memory-sizing (`No available memory
-for the cache blocks`) failure seen in experiment 2 — unlike the two above, this depends
-on several continuous parameters at once (`gpu_memory_utilization`, `max_num_seqs`,
-`max_num_batched_tokens`, `max_model_len`, `block_size`, `kv_cache_dtype`'s byte width)
-plus real constants (Qwen2.5-7B-Instruct: 28 layers, 4 KV heads, head_dim 128 per its own
-`config.json`; the A10G's actual usable VRAM, which could not be read live from the
-cluster at the time of writing — the commonly-quoted "24 GB" is a vendor-rounded figure,
-not what `nvidia-smi` actually reports). Getting this wrong in either direction (too
-loose: doesn't prevent the OOM; too strict: excludes valid configurations) is worse than
-leaving it as an accepted, bounded failure source for `maxFailedExperiments` to absorb —
-worth revisiting with a real `nvidia-smi`/DCGM memory reading if OOM failures turn out to
-dominate the failure budget in practice.
+**Not added as a `parameterConstraint`**: the memory-sizing (`No available memory for the
+cache blocks`) failure seen in experiment 2 (2026-07-10) depends on several continuous
+parameters at once (`gpu_memory_utilization`, `max_num_batched_tokens`, `max_model_len`,
+plus real constants — model weights, activation-memory overhead, and the A10G's actual
+usable VRAM) in a way that's hard to express precisely as a single formula without a live
+memory reading. Instead, **`gpu_memory_utilization`'s domain was narrowed** from
+`[0.5, 0.95]` to `[0.85, 0.95]`, calibrated against the one real data point this crash
+provided: model weights measured at **14.29 GiB** (bfloat16), `gpu_memory_utilization
+=0.6125` yielding `Available KV cache memory: -1.54 GiB`. Solving backwards against a
+commonly-reported A10G usable VRAM of ~22-22.5 GiB (not the vendor-rounded "24 GB") puts
+the break-even point around **0.81-0.83** even in the worst case (`max_num_batched_tokens`
+at this study's max of 8192, which increases vLLM's internal activation-memory profiling
+overhead) — `0.85` adds a small margin above that estimate. This is a **best-effort
+estimate, not a guarantee**: the A10G's exact usable VRAM was never read directly via
+`nvidia-smi`/DCGM, so occasional OOM failures near the low end of this narrowed domain
+are still possible and, if so, are still absorbed by `maxFailedExperiments` — revisit
+with a real memory reading if they turn out to be frequent.
 
 `maxFailedExperiments: 200` (not equal to `numberOfExperiments: 1000`, unlike S3.1 which
 set both to 1000 and — per the `akamas-study-manager` plugin's own schema
@@ -266,6 +275,34 @@ vLLM source comments describe — memory/performance knobs, not backend-capabili
 enums) but were not each individually source-verified the way `block_size` now has been.
 If another 100%-reproducible crash appears, check that parameter's own vLLM source next
 before assuming it's another one-off bad sample.
+
+### Incident: `TRITON_ATTN` + fp8 crash on Ampere (2026-07-10)
+
+Experiment 3 crashed with a Triton compilation error, not a vLLM-level `ValueError`:
+
+```
+triton.compiler.errors.CompilationError: at 1:0:
+def reshape_and_cache_kernel_flash(
+^
+ValueError("type fp8e4nv not supported in this architecture. The supported fp8 dtypes are ('fp8e4b15', 'fp8e5')")
+```
+
+Traced to `vllm/v1/attention/ops/triton_reshape_and_cache_flash.py`, called from
+`TritonAttentionBackend.do_kv_cache_update` — this is `attention_backend=TRITON_ATTN`'s
+own KV-cache-update kernel, JIT-compiled by Triton at request time (unlike
+`FlashInferBackend.do_kv_cache_update`, confirmed to instead call the precompiled C++/CUDA
+op `torch.ops._C_cache_ops.reshape_and_cache_flash` — no Triton JIT involved, so this
+doesn't affect `FLASHINFER`). Triton's `fp8e4nv` type (the native E4M3 format, used when
+`kv_cache_dtype` is `fp8` or `fp8_e4m3`) requires compute capability ≥ 9 (Hopper+); the
+A10G is Ampere (compute capability 8.6), which Triton only supports via the older
+`fp8e4b15`/`fp8e5` formats — `fp8e5` matches `kv_cache_dtype=fp8_e5m2`, so that one
+specific combination is unaffected, but plain `fp8` and `fp8_e4m3` are not.
+
+**Fix**: two more `parameterConstraints` (see above) ruling out
+`attention_backend=TRITON_ATTN` combined with `kv_cache_dtype` in `{fp8, fp8_e4m3}`.
+`FLASH_ATTN` was already excluded from all non-`auto` `kv_cache_dtype` values by the
+first constraint; `FLASHINFER` is unaffected (different, non-Triton kernel path) and
+needs no additional restriction.
 
 ### Pack update: `attention_backend` + fixed `block_size` (2026-07-09, pack v1.3.1)
 

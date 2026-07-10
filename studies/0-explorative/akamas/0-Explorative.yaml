@@ -16,7 +16,7 @@ windowing:
 
 parametersSelection:
   - name: vLLM.gpu_memory_utilization
-    domain: [0.5, 0.95]
+    domain: [0.85, 0.95]
   - name: vLLM.max_num_seqs
     domain: [16, 1024]
   - name: vLLM.max_num_batched_tokens
@@ -57,6 +57,10 @@ parameterConstraints:
     formula: vLLM.attention_backend != "FLASHINFER" || vLLM.block_size == "16" || vLLM.block_size == "32" || vLLM.block_size == "64"
   - name: max_num_batched_tokens must be at least max_num_seqs
     formula: vLLM.max_num_batched_tokens >= vLLM.max_num_seqs
+  - name: TRITON_ATTN does not support fp8 kv_cache_dtype on Ampere
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8"
+  - name: TRITON_ATTN does not support fp8_e4m3 kv_cache_dtype on Ampere
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e4m3"
 
 steps:
   - name: baseline
