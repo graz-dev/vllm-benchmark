@@ -21,8 +21,6 @@ parametersSelection:
     domain: [16, 1024]
   - name: vLLM.max_num_batched_tokens
     domain: [256, 8192]
-  - name: vLLM.max_model_len
-    domain: [2048, 32768]
   - name: vLLM.kv_cache_dtype
     categories: [auto, fp8, fp8_e4m3, fp8_e5m2]
   - name: vLLM.performance_mode
@@ -61,6 +59,8 @@ parameterConstraints:
     formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8"
   - name: TRITON_ATTN does not support fp8_e4m3 kv_cache_dtype on Ampere
     formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e4m3"
+  - name: TRITON_ATTN does not support fp8_e5m2 kv_cache_dtype (query-quant bug)
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e5m2"
 
 steps:
   - name: baseline
@@ -71,7 +71,6 @@ steps:
       vLLM.gpu_memory_utilization: 0.92
       vLLM.max_num_seqs: 128
       vLLM.max_num_batched_tokens: 2048
-      vLLM.max_model_len: 32768
       vLLM.kv_cache_dtype: auto
       vLLM.performance_mode: balanced
       vLLM.optimization_level: 2
@@ -85,6 +84,8 @@ steps:
       vLLM.max_cudagraph_capture_size: 256
       vLLM.block_size: "16"
       vLLM.attention_backend: FLASH_ATTN
+      # --- Pinned (max_model_len — confirmed no measurable memory effect, see README) ---
+      vLLM.max_model_len: 32768
       # --- Pinned (single A10G, non-MoE model — not in parametersSelection) ---
       vLLM.tensor_parallel_size: 1
       vLLM.pipeline_parallel_size: 1

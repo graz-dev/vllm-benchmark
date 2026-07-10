@@ -7,8 +7,9 @@
 
 Establish this repo's first baseline study (`ROADMAP.md` backlog #1: maximize token
 throughput, the reference point future studies compare against) while simultaneously
-exploring the full parameter surface of the vLLM optimization pack **1.2.0** — a much
-larger space (25 parameters) than the pack this repo's pre-restructure study
+exploring the full parameter surface of the vLLM optimization pack (now **1.3.1** — see
+"Stack & versions" below) — a much larger space (26 parameters) than the pack this
+repo's pre-restructure study
 (`_old/akamas/studies/S3.1-Optimization-Throughput.yaml`) used (5 parameters). This
 study is the direct successor to S3.1: same goal, same target stack, rebuilt against the
 current pack and this repo's self-contained study layout.
@@ -29,8 +30,11 @@ a natural next study once this one shows the throughput/latency Pareto shape).
   Container` component type, no properties needed.
 - **Workload under test:** `vllm/vllm-openai:v0.22.0` serving `Qwen/Qwen2.5-7B-Instruct`
   (served as `qwen2.5-7b`), namespace `llm-serving`.
-- **Cluster / hardware:** single NVIDIA A10G GPU (24 GB), namespace `llm-serving` for the
-  workload, `llm-benchmark` for the load generator, `monitoring` for Prometheus/DCGM.
+- **Cluster / hardware:** single NVIDIA A10G GPU (24 GB nominal; actual usable VRAM is
+  ~22-22.5 GiB per `nvidia-smi` convention — see the `gpu_memory_utilization` note under
+  "Parameter constraints" below, never read live from this cluster, estimated backwards
+  from an observed OOM), namespace `llm-serving` for the workload, `llm-benchmark` for
+  the load generator, `monitoring` for Prometheus/DCGM.
   Cluster provisioning itself is out of this repo's tooling scope — see `ROADMAP.md`.
 - **Load generator:** GuideLLM (`ghcr.io/neuralmagic/guidellm:latest`), `guidellm
   benchmark --rate-type throughput --max-seconds 900 --data
@@ -43,7 +47,7 @@ a natural next study once this one shows the throughput/latency Pareto shape).
 
 ## Parameters tuned
 
-17 of the pack's 26 vLLM parameters are searched; 8 are pinned to fixed values (single
+16 of the pack's 26 vLLM parameters are searched; 9 are pinned to fixed values (single
 GPU, non-MoE model, or an unsupported feature — see below); 1 (`compilation_mode`) is
 deliberately excluded — see notes below the table.
 
@@ -52,7 +56,6 @@ deliberately excluded — see notes below the table.
 | `vLLM.gpu_memory_utilization` | [0.85, 0.95] | 0.92 |
 | `vLLM.max_num_seqs` | [16, 1024] | 128 |
 | `vLLM.max_num_batched_tokens` | [256, 8192] | 2048 |
-| `vLLM.max_model_len` | [2048, 32768] | 32768 |
 | `vLLM.kv_cache_dtype` | auto, fp8, fp8_e4m3, fp8_e5m2 | auto |
 | `vLLM.performance_mode` | balanced, interactivity, throughput | balanced |
 | `vLLM.optimization_level` | [0, 3] | 2 |
@@ -76,15 +79,17 @@ Pinned (not in `parametersSelection`, fixed for every trial via the baseline ste
 | `vLLM.data_parallel_size` | 1 | Only one GPU available. |
 | `vLLM.enable_expert_parallel` | false | Qwen2.5-7B is dense, not MoE; irrelevant. |
 | `vLLM.disable_custom_all_reduce` | false (pack default) | Per the pack's own description, only relevant when `tensor_parallel_size > 1`; a no-op at TP=1, not worth spending optimizer budget on. |
+| `vLLM.max_model_len` | 32768 (model's native max) | **Moved here 2026-07-10, after live A/B verification on the cluster (see "Manual verification runs" below)** confirmed it has no measurable effect on available KV cache memory for this model/config — vLLM 0.22.0 profiles memory using `max_num_batched_tokens`, not `max_model_len`. With no observed throughput effect either way, it's pinned at the model's own native context length (`max_position_embeddings: 32768`, confirmed from Qwen2.5-7B-Instruct's `config.json`) rather than spending optimizer budget on it. See "Parameters tuned" notes below the table for the full empirical finding (kept for the record, since it corrects an earlier, wrong assumption in this same README). |
 | `vLLM.max_num_partial_prefills` | 1 | **Moved here 2026-07-09, after the study had already run experiments** — "Concurrent Partial Prefill" (any value > 1) is not supported on this vLLM 0.22.0 / A10G combo. See "Incident: Concurrent Partial Prefill crash" below. |
 | `vLLM.max_long_partial_prefills` | 1 | Same incident — only meaningful when `max_num_partial_prefills > 1`. |
 | `vLLM.long_prefill_token_threshold` | 0 | Same incident — same reason (0 = disabled, matches vLLM's own default). |
 
 `vLLM.block_size` was pinned too (2026-07-09, "Incident: invalid block_size" below), but
-**moved back to tunable on 2026-07-09** once the pack itself was fixed (see "Pack update"
-below): it's now categorical `[16, 32, 64]` — the intersection of values valid across all
-three `attention_backend` options, chosen specifically so no sampled
-`(attention_backend, block_size)` pair can ever be invalid.
+**moved back to tunable** once the pack itself was fixed (see "Pack update" below): it's
+now categorical over the full `[16, 32, 48, 64, 80, 96, 112, 128]` (every multiple of 16
+the pack's original cap allows), with the `FLASHINFER`-specific restriction to `{16, 32,
+64}` handled by a `parameterConstraint` instead of narrowing the domain for every
+backend (see "Parameter constraints" above).
 
 **Excluded entirely** (not in `parametersSelection`, not pinned, not referenced by the
 deployment template at all): `vLLM.compilation_mode`. Verified against vLLM's own source
@@ -119,6 +124,40 @@ where possible:
   against vLLM source that `TritonAttentionBackend` and `FlashInferBackend` both declare
   support for all three; only `FlashAttentionBackend` doesn't (see "Parameter
   constraints" below for how that's now guarded rather than just accepted as a risk).
+- **`vLLM.max_model_len` — history of this decision (2026-07-10, kept for the record)**.
+  Initially considered for pinning on the assumption that it's just "the model's context
+  window" and therefore not worth tuning without changing the model. That assumption was
+  wrong: verified against vLLM source (`vllm/config/model.py`'s
+  `_get_and_verify_max_len`, `v0.22.0` tag), `max_model_len` is a **configurable
+  ceiling**, not a fixed model property — vLLM only raises an error if it's set *higher*
+  than the model's derived native max (Qwen2.5-7B-Instruct's own `config.json` reports
+  `max_position_embeddings: 32768`, confirmed live from Hugging Face); setting it lower
+  is always accepted. So it was kept **tunable** instead, on the hypothesis that lowering
+  it (this study's load generator always sends fixed-shape requests —
+  `prompt_tokens=512,output_tokens=128` = 640 tokens total, see "Stack & versions" above
+  — well under any value in its domain) would free GPU memory for more KV cache blocks
+  and therefore more throughput.
+
+  **That memory hypothesis was then empirically disproven by a direct A/B test on the
+  real cluster (2026-07-10)** — see "Manual verification runs" below: deploying the
+  identical config (`FLASH_ATTN`, `kv_cache_dtype=auto`, `block_size=16`,
+  `max_num_batched_tokens=2048`) with only `max_model_len` changed (`2048` vs. `32768`)
+  produced **identical** `Available KV cache memory` (4.76 GiB) and `GPU KV cache size`
+  (89,088 tokens) in both runs — only the *reported* "maximum concurrency for N tokens
+  per request" ratio differed (43.50x vs. 2.72x), which is just `89,088 / max_model_len`,
+  not an actual difference in reserved memory. vLLM 0.22.0's memory profiling sizes its
+  dummy forward pass by `max_num_batched_tokens`, not `max_model_len` — so `max_model_len`
+  does **not** measurably affect available KV cache memory for this model/config, and
+  therefore has no demonstrated effect on this study's throughput objective either.
+
+  **Decision: `vLLM.max_model_len` is now pinned** (moved out of `parametersSelection`
+  into the baseline step's pinned `values`, see "Parameters tuned" table above) at
+  `32768` — the model's own native context length — rather than left tunable with no
+  demonstrated benefit. Its only confirmed effect remains the length ceiling past which
+  vLLM rejects a request, which this study's fixed ~640-token workload never approaches
+  regardless of where in `[2048, 32768]` it would have been set — so pinning it at the
+  native max costs nothing and removes a dimension from the search space that had no
+  measurable payoff.
 
 ## Parameter constraints
 
@@ -144,6 +183,8 @@ parameterConstraints:
     formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8"
   - name: TRITON_ATTN does not support fp8_e4m3 kv_cache_dtype on Ampere
     formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e4m3"
+  - name: TRITON_ATTN does not support fp8_e5m2 kv_cache_dtype (query-quant bug)
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e5m2"
 ```
 
 The first two were found the hard way, from real crashed experiments (see the incidents
@@ -295,14 +336,80 @@ op `torch.ops._C_cache_ops.reshape_and_cache_flash` — no Triton JIT involved, 
 doesn't affect `FLASHINFER`). Triton's `fp8e4nv` type (the native E4M3 format, used when
 `kv_cache_dtype` is `fp8` or `fp8_e4m3`) requires compute capability ≥ 9 (Hopper+); the
 A10G is Ampere (compute capability 8.6), which Triton only supports via the older
-`fp8e4b15`/`fp8e5` formats — `fp8e5` matches `kv_cache_dtype=fp8_e5m2`, so that one
-specific combination is unaffected, but plain `fp8` and `fp8_e4m3` are not.
+`fp8e4b15`/`fp8e5` formats — `fp8e5` matches `kv_cache_dtype=fp8_e5m2`, so this specific
+*Triton-compilation* failure mode doesn't hit that value. (It turned out to be broken by
+a *different* bug instead — see the next incident.)
 
-**Fix**: two more `parameterConstraints` (see above) ruling out
-`attention_backend=TRITON_ATTN` combined with `kv_cache_dtype` in `{fp8, fp8_e4m3}`.
-`FLASH_ATTN` was already excluded from all non-`auto` `kv_cache_dtype` values by the
-first constraint; `FLASHINFER` is unaffected (different, non-Triton kernel path) and
-needs no additional restriction.
+**Fix**: two `parameterConstraints` (see above) ruling out `attention_backend=TRITON_ATTN`
+combined with `kv_cache_dtype` in `{fp8, fp8_e4m3}`. `FLASH_ATTN` was already excluded
+from all non-`auto` `kv_cache_dtype` values by the first constraint; `FLASHINFER` is
+unaffected (different, non-Triton kernel path) and needs no additional restriction.
+
+### Incident: `TRITON_ATTN` + `fp8_e5m2` crash — separate query-quantization bug (2026-07-10)
+
+Experiment 11 crashed with a plain Python `AssertionError`, not a Triton compilation
+error, despite `fp8_e5m2` being the one fp8-family value the previous incident's
+analysis expected to be safe for `TRITON_ATTN`:
+
+```
+(EngineCore pid=98) ERROR ... assert self.kv_cache_dtype in {"fp8", "fp8_e4m3", "nvfp4"}
+(EngineCore pid=98) ERROR ... AssertionError
+```
+
+Traced to `vllm/model_executor/layers/attention/attention.py` (v0.22.0 tag). This is an
+independent code path from the Triton-JIT `reshape_and_cache` kernel in the previous
+incident: at `__init__`, vLLM enables query quantization (`self.query_quant`) whenever
+`kv_cache_dtype.startswith("fp8")` — which matches all three of `fp8`, `fp8_e4m3`, *and*
+`fp8_e5m2` — **and** the active attention backend's `supports_quant_query_input` is
+`True`. But `forward()` then asserts `kv_cache_dtype in {"fp8", "fp8_e4m3", "nvfp4"}`,
+which **excludes `fp8_e5m2`** — an inconsistency between vLLM's own enablement condition
+and its own assertion, not something this study can influence.
+
+Checked each backend's `supports_quant_query_input` to see who actually hits this:
+
+- `TritonAttentionBackend.supports_quant_query_input = current_platform.is_cuda()` —
+  unconditionally `True` on any CUDA GPU, A10G included. **`TRITON_ATTN` always hits this
+  assertion when `kv_cache_dtype=fp8_e5m2`.**
+- `FlashInferBackend.supports_quant_query_input` requires
+  `can_use_trtllm_attention(...)` → `supports_trtllm_attention()`, which itself requires
+  `current_platform.is_device_capability_family(100)` (SM100/Blackwell). The A10G is
+  SM86 (Ampere) — this is `False`, so **`FLASHINFER` never enables query quantization on
+  this hardware** and is unaffected.
+- `FlashAttentionBackend` is moot — already excluded from every non-`auto`
+  `kv_cache_dtype` by the first constraint above.
+
+Net effect: combined with the previous incident, **`TRITON_ATTN` cannot successfully run
+any of the three fp8-family `kv_cache_dtype` values on this A10G** — `fp8`/`fp8_e4m3` via
+the Triton-compilation error, `fp8_e5m2` via this assertion. Only `FLASHINFER` can
+actually use fp8 KV-cache quantization with any attention backend enabled in this study.
+
+**Fix**: a third `parameterConstraint` (see above) ruling out
+`attention_backend=TRITON_ATTN` combined with `kv_cache_dtype=fp8_e5m2`, completing the
+exclusion of all three fp8-family values for `TRITON_ATTN`.
+
+### Manual verification runs before resuming the study (2026-07-10)
+
+Before restarting the study with the corrected `parameterConstraints`, several configs
+were deployed directly to the live cluster (`kubectl apply` against hand-rendered
+copies of `01-deployment_template.yaml`, bypassing Akamas) to confirm they actually work
+end-to-end — not just "no longer hit a known crash" — including a real
+`/v1/completions` request against each, not just a passing `/health` check:
+
+| Config | Result |
+|---|---|
+| `FLASHINFER` + `kv_cache_dtype=fp8_e4m3` + `block_size=16` | ✅ loads, FlashInfer warm-up + CUDA graph capture succeed, real completion request returns a correct answer. Confirms `FLASHINFER` is a genuinely working fp8-KV-cache path, not just "not yet observed to crash." |
+| `TRITON_ATTN` + `kv_cache_dtype=auto` + `block_size=48` | ✅ loads and serves correctly. Confirms `TRITON_ATTN` itself is healthy once all three fp8-family `kv_cache_dtype` values are excluded for it. |
+| `FLASH_ATTN` + `block_size=128` (top of the new categorical range) | ✅ loads and serves correctly — no other hidden block-size restriction for `FLASH_ATTN` at the high end. |
+| `max_model_len=2048` (bottom of its domain), rest baseline | ✅ loads and serves correctly. |
+| Control: identical config to the row above but `max_model_len=32768` | ✅ loads and serves correctly; used to A/B-test the `max_model_len` memory claim above — see the correction in "Parameters tuned." |
+
+No new failure modes were found across these five runs. Combined with the three
+incidents above, this gives reasonable confidence that the current
+`parameterConstraints` set closes the failure modes actually observed on this
+vLLM 0.22.0 / A10G combination, though — as already noted elsewhere in this
+README — the OOM-related `gpu_memory_utilization` domain narrowing remains a
+best-effort estimate, not a guarantee, and the wider parameter space (26 parameters)
+was not exhaustively swept manually.
 
 ### Pack update: `attention_backend` + fixed `block_size` (2026-07-09, pack v1.3.1)
 
@@ -413,7 +520,7 @@ akamas start study "0-Explorative"
    but if the actual deployed vLLM version turns out to need `-O<level>` instead, adjust
    the template accordingly.
 
-All 24 templated flags (everything except the deliberately-excluded `compilation_mode`)
+All 25 templated flags (everything except the deliberately-excluded `compilation_mode`)
 were individually confirmed present, spelled exactly as templated, in
 `vllm/engine/arg_utils.py` at the `v0.22.0` git tag itself (not just `main`, which has
 since drifted — e.g. gained `--device-ids`, `--model-class-overrides` — confirming `main`
