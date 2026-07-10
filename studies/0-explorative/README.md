@@ -20,7 +20,7 @@ a natural next study once this one shows the throughput/latency Pareto shape).
 ## Stack & versions
 
 - **Akamas version:** 3.7.x
-- **Optimization pack(s) used:** vLLM **1.3.0** (https://gitlab.com/akamas/optimization-packs/vllm,
+- **Optimization pack(s) used:** vLLM **1.3.1** (https://gitlab.com/akamas/optimization-packs/vllm,
   branch `feature/attention-backend-and-block-size-categorical` at the time of writing —
   started from tag `1.2.0`, see "Pack update" below for what changed and why). GPU pack:
   name/metrics assumed unchanged from this repo's pre-restructure
@@ -267,13 +267,14 @@ enums) but were not each individually source-verified the way `block_size` now h
 If another 100%-reproducible crash appears, check that parameter's own vLLM source next
 before assuming it's another one-off bad sample.
 
-### Pack update: `attention_backend` + fixed `block_size` (2026-07-09, pack v1.3.0)
+### Pack update: `attention_backend` + fixed `block_size` (2026-07-09, pack v1.3.1)
 
 Rather than leave `block_size` permanently pinned, the root cause was fixed at the
 source: the vLLM optimization pack itself
 (https://gitlab.com/akamas/optimization-packs/vllm, branch
 `feature/attention-backend-and-block-size-categorical`, not yet merged) was updated to
-`version: 1.3.0`:
+`version: 1.3.0`, then `1.3.1` once `block_size` was widened back after
+`parameterConstraints` was confirmed to cover the FlashInfer-specific case:
 
 - **`block_size`** changed from a free `integer [1, 128]` to `categorical [16, 32, 48,
   64, 80, 96, 112, 128]` — every multiple of 16 up to the pack's original cap (the full
@@ -306,7 +307,7 @@ Akamas instance from that branch **before** re-creating this study, or
 **1. Prerequisites (one-time, before creating anything below):**
 
 ```bash
-# confirm the vLLM pack 1.3.0 (with attention_backend + fixed block_size) is installed
+# confirm the vLLM pack 1.3.1 (with attention_backend + fixed block_size) is installed
 akamas list optimization-pack
 
 # apply the two PVCs by hand — not part of the workflow, see "Assumptions to verify" #6
