@@ -64,7 +64,7 @@ deliberately excluded — see notes below the table.
 | `vLLM.tokenizer_mode` | auto, hf, slow | auto |
 | `vLLM.async_scheduling` | true, false | true |
 | `vLLM.max_cudagraph_capture_size` | [1, 1024] | 256 |
-| `vLLM.block_size` | 16, 32, 64 | 16 |
+| `vLLM.block_size` | 16, 32, 48, 64, 80, 96, 112, 128 | 16 |
 | `vLLM.attention_backend` | FLASH_ATTN, FLASHINFER, TRITON_ATTN | FLASH_ATTN |
 
 Pinned (not in `parametersSelection`, fixed for every trial via the baseline step):
@@ -115,9 +115,70 @@ where possible:
 - **`vLLM.prefix_caching_hash_algo`** excludes `xxhash`/`xxhash_cbor`: per the pack's own
   parameter description, these require the optional `xxhash` Python package, not
   confirmed installed in the `vllm/vllm-openai:v0.22.0` image.
-- **`vLLM.kv_cache_dtype`** keeps the full `fp8`/`fp8_e4m3`/`fp8_e5m2` range even though
-  FP8 KV-cache support on an Ampere-generation A10G is unconfirmed — some experiments may
-  legitimately fail here; accepted, see `maxFailedExperiments` below.
+- **`vLLM.kv_cache_dtype`** keeps the full `fp8`/`fp8_e4m3`/`fp8_e5m2` range — confirmed
+  against vLLM source that `TritonAttentionBackend` and `FlashInferBackend` both declare
+  support for all three; only `FlashAttentionBackend` doesn't (see "Parameter
+  constraints" below for how that's now guarded rather than just accepted as a risk).
+
+## Parameter constraints
+
+Akamas studies support a `parameterConstraints` field (documented at
+`docs.akamas.io/akamas-docs/using/study/parameters-and-constraints` — **not** covered by
+the `akamas-study-manager` plugin's bundled schema reference, which only documents
+`goal.constraints`; that's a metric-based, post-hoc check on a *successful* trial's
+result, a completely different mechanism from this one) that lets the optimizer be told
+to **never generate** a combination of parameter *values* in the first place — confirmed
+to support `==`/`!=` on categorical parameters and `&`/`||` boolean logic, not just
+numeric inequalities. This directly closes gaps that earlier revisions of this study
+could only work around by narrowing domains or accepting a known failure rate:
+
+```yaml
+parameterConstraints:
+  - name: FLASH_ATTN only supports auto kv_cache_dtype
+    formula: vLLM.attention_backend != "FLASH_ATTN" || vLLM.kv_cache_dtype == "auto"
+  - name: FlashInfer only supports block_size 16, 32, or 64
+    formula: vLLM.attention_backend != "FLASHINFER" || vLLM.block_size == "16" || vLLM.block_size == "32" || vLLM.block_size == "64"
+  - name: max_num_batched_tokens must be at least max_num_seqs
+    formula: vLLM.max_num_batched_tokens >= vLLM.max_num_seqs
+```
+
+The first two were found the hard way, from real crashed experiments (see the incidents
+above and below) — verified against vLLM 0.22.0's attention backend source
+(`vllm/v1/attention/backends/{flash_attn,triton_attn,flashinfer}.py`):
+`FlashAttentionBackend.supported_kv_cache_dtypes = ["auto", "float16", "bfloat16"]` (no
+fp8 support at all); `FlashInferBackend.get_supported_kernel_block_sizes()` returns
+exactly `[16, 32, 64]` while `FlashAttentionBackend`/`TritonAttentionBackend` both accept
+any multiple of 16. Because these constraints exist, `vLLM.block_size` no longer needs to
+be narrowed to the conservative 3-value intersection — the pack itself was widened back
+to the full `[16, 32, 48, 64, 80, 96, 112, 128]` (see "Pack update" below).
+
+The **third was found proactively**, by auditing vLLM's own config validation source for
+every `raise ValueError`/`NotImplementedError` touching two or more of this study's
+tunable parameters, before it ever caused a failed experiment here — `vllm/config/scheduler.py`'s
+`verify_max_model_len` unconditionally rejects `max_num_batched_tokens < max_num_seqs`
+(unlike the *other* check in that same method, `max_num_batched_tokens < max_model_len`,
+which only fires when chunked prefill is disabled — this repo's template never touches
+`--enable-chunked-prefill`, which defaults to enabled, so that specific check doesn't
+apply here). Confirmed as a frequently-hit real-world issue independent of this study —
+see [vllm-project/vllm#2492](https://github.com/vllm-project/vllm/issues/2492) and
+[#18681](https://github.com/vllm-project/vllm/issues/18681). This study's domains
+(`max_num_batched_tokens` [256, 8192], `max_num_seqs` [16, 1024]) overlap enough that a
+meaningful fraction of otherwise-valid-looking samples would have violated this — e.g.
+`max_num_batched_tokens=512` with `max_num_seqs=700` — without ever needing the fp8 or
+FlashInfer conditions above.
+
+**Not yet added, deliberately**: a constraint for the memory-sizing (`No available memory
+for the cache blocks`) failure seen in experiment 2 — unlike the two above, this depends
+on several continuous parameters at once (`gpu_memory_utilization`, `max_num_seqs`,
+`max_num_batched_tokens`, `max_model_len`, `block_size`, `kv_cache_dtype`'s byte width)
+plus real constants (Qwen2.5-7B-Instruct: 28 layers, 4 KV heads, head_dim 128 per its own
+`config.json`; the A10G's actual usable VRAM, which could not be read live from the
+cluster at the time of writing — the commonly-quoted "24 GB" is a vendor-rounded figure,
+not what `nvidia-smi` actually reports). Getting this wrong in either direction (too
+loose: doesn't prevent the OOM; too strict: excludes valid configurations) is worse than
+leaving it as an accepted, bounded failure source for `maxFailedExperiments` to absorb —
+worth revisiting with a real `nvidia-smi`/DCGM memory reading if OOM failures turn out to
+dominate the failure budget in practice.
 
 `maxFailedExperiments: 200` (not equal to `numberOfExperiments: 1000`, unlike S3.1 which
 set both to 1000 and — per the `akamas-study-manager` plugin's own schema
@@ -214,29 +275,31 @@ source: the vLLM optimization pack itself
 `feature/attention-backend-and-block-size-categorical`, not yet merged) was updated to
 `version: 1.3.0`:
 
-- **`block_size`** changed from a free `integer [1, 128]` to `categorical [16, 32, 64]`
-  — the values valid across all three CUDA attention backends this pack now exposes.
+- **`block_size`** changed from a free `integer [1, 128]` to `categorical [16, 32, 48,
+  64, 80, 96, 112, 128]` — every multiple of 16 up to the pack's original cap (the full
+  range `FLASH_ATTN`/`TRITON_ATTN` accept; `FLASHINFER`'s narrower `{16,32,64}` is now
+  guarded by a study-level `parameterConstraints` entry instead of narrowing the pack's
+  domain for every backend — see "Parameter constraints" above).
 - **`attention_backend`** added as a new categorical parameter (`FLASH_ATTN`,
   `FLASHINFER`, `TRITON_ATTN`), mapping to vLLM's real `--attention-backend` flag, so the
   backend itself is now an explicit, tunable/pinnable choice instead of relying on
   vLLM's own auto-selection (the mechanism that made the original crash possible: silent
   fallthrough to "no valid backend" instead of a validation error at config time).
 
-`block_size=16 × attention_backend∈{FLASH_ATTN,FLASHINFER,TRITON_ATTN}` and
-`block_size∈{16,32,64} × attention_backend=FLASHINFER` are both fully valid — `{16, 32,
-64}` was chosen deliberately as the *intersection* of what all three backends accept
-(FlashInfer is the strictest, accepting only those three; FlashAttention/TritonAttention
-would each individually also accept 48/80/96/112/128, but widening beyond the
-intersection would require either dropping FlashInfer from `attention_backend`'s
-categories or accepting a bounded, known failure rate — deliberately not done here to
-keep this parameter pair 100% failure-free).
+This went through two revisions on the same branch: the first commit narrowed
+`block_size` to the safe 3-value intersection `{16,32,64}` across all three backends
+(before `parameterConstraints` was known to support categorical equality + boolean
+logic); the second commit widened it back to the full 8-value range once the
+`FLASHINFER`-specific restriction could be expressed as a study-level constraint instead
+— see "Parameter constraints" above for exactly which constraints replace which
+narrowing.
 
-`block_size` is therefore **back in `parametersSelection`** as categorical, and
-`attention_backend` is newly added — see the "Parameters tuned" table above. This
-requires the pack to actually be built and installed/upgraded (`akamas build
-optimization-pack` → `akamas install -f optimization-pack`) on the target Akamas
-instance from that branch **before** re-creating this study, or `vLLM.attention_backend`/
-the new `block_size` categories won't resolve.
+`block_size` is therefore **back in `parametersSelection`** as categorical (now over all
+8 values, not just 3), and `attention_backend` is newly added — see the "Parameters
+tuned" table above. This requires the pack to actually be built and installed/upgraded
+(`akamas build optimization-pack` → `akamas install -f optimization-pack`) on the target
+Akamas instance from that branch **before** re-creating this study, or
+`vLLM.attention_backend`/the new `block_size` categories won't resolve.
 
 ## How to run
 

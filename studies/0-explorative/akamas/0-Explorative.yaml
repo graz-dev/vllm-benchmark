@@ -46,9 +46,17 @@ parametersSelection:
   - name: vLLM.max_cudagraph_capture_size
     domain: [1, 1024]
   - name: vLLM.block_size
-    categories: ["16", "32", "64"]
+    categories: ["16", "32", "48", "64", "80", "96", "112", "128"]
   - name: vLLM.attention_backend
     categories: [FLASH_ATTN, FLASHINFER, TRITON_ATTN]
+
+parameterConstraints:
+  - name: FLASH_ATTN only supports auto kv_cache_dtype
+    formula: vLLM.attention_backend != "FLASH_ATTN" || vLLM.kv_cache_dtype == "auto"
+  - name: FlashInfer only supports block_size 16, 32, or 64
+    formula: vLLM.attention_backend != "FLASHINFER" || vLLM.block_size == "16" || vLLM.block_size == "32" || vLLM.block_size == "64"
+  - name: max_num_batched_tokens must be at least max_num_seqs
+    formula: vLLM.max_num_batched_tokens >= vLLM.max_num_seqs
 
 steps:
   - name: baseline
