@@ -129,7 +129,35 @@ self-contained). Update this file:
   study starts, `tensor_parallel_size` may not need to be an Akamas-searched parameter
   at all for that study — it would already be pinned by the topology decision, and only
   per-instance parameters within that fixed topology would go into
-  `parametersSelection`.
+  `parametersSelection`. Concrete numbers to sanity-check a future TP>1 study against,
+  per `knowledge/notes/2026-07-generative-ai-on-kubernetes-gpu-production-patterns.md`:
+  tensor-parallel communication overhead can consume **50-70% of inference time** if the
+  interconnect is poorly partitioned (the reason it's recommended single-node-only, with
+  NVLink/NVSwitch — cross-node bandwidth is roughly two orders of magnitude slower);
+  within one node, ~4 GPUs deliver "approximately three and a half times" one GPU's
+  throughput for a well-optimized model (near-linear but not perfectly so) — a future
+  study measuring TP scaling efficiency below that ballpark should suspect interconnect
+  or partitioning issues before concluding TP itself doesn't pay off. **Node-provisioning
+  prerequisite to check before that study, per
+  `knowledge/notes/2026-07-generative-ai-on-kubernetes-training-job-scheduling.md`**: the
+  Kubernetes Topology Manager (Kubelet component, policies `none`/`best-effort`/
+  `restricted`/`single-numa-node`) coordinates CPU/GPU NUMA locality — cross-NUMA-socket
+  memory access costs roughly 3x the latency of local access, which can eat into TP's
+  own communication budget on a multi-socket node if the pod's GPUs and pinned CPUs land
+  on different sockets. Worth confirming the target node's Topology Manager policy (and
+  that the GPUs assigned to a TP>1 pod are NUMA-local) as part of that study's setup, not
+  something Akamas tunes — a provisioning check, like the NVLink/NVSwitch interconnect
+  check already noted above. **Concrete GPU-count sizing formula to compute that
+  "minimum that fits" from first principles**, per
+  `knowledge/notes/2026-07-inference-engineering-techniques-quantization-speculation-parallelism.md`:
+  `vram_required = (bits_precision / 8) × params_billions × kv_cache_allocation_factor`
+  — round up to the nearest available instance size to get the minimum GPU count, then
+  derive the minimum TP degree from that. The same source states Tensor Parallelism
+  "should be your default strategy" for multi-GPU inference (supports both dense and MoE
+  models), reinforcing this hypothesis's premise, and gives a firm general rule worth
+  citing directly: "unless your model and KV cache are so large as to require multi-node
+  inference, it probably isn't the best use of extra hardware — better off scaling
+  replicas horizontally, or disaggregating."
 
 - **H6 — `tensor_parallel_size` and `max_num_seqs` should not be analyzed as independent
   effects within a single replica** [TO BE CONFIRMED] Per
@@ -149,9 +177,19 @@ self-contained). Update this file:
 - **Q2 — Load generator choice**: studies so far have used GuideLLM; NVIDIA's
   GenAI-Perf/AIPerf is being evaluated as an alternative. This is a **per-study**
   decision, not a repo-wide default — document the actual tool + version in each study's
-  README. If both get used, it may be worth a note in `knowledge/` comparing their
-  measurement methodology (e.g. how each defines TTFT/ITL) before comparing results
-  across studies that used different tools.
+  README. Now backed by `knowledge/notes/2026-07-llm-inference-load-testing-tools.md`'s
+  methodology comparison — concretely: GuideLLM and vLLM's own `benchmark_serving.py`
+  are open-loop (arrivals scheduled independent of responses; `benchmark_serving.py`
+  additionally supports a `--burstiness` gamma-distribution knob GuideLLM's poisson/
+  constant split doesn't have), while AIPerf/GenAI-Perf keeps a fixed number of
+  concurrent requests active continuously (closed-loop-style) and defines
+  ITL/TPOT as `(e2e_latency − TTFT) / (total_output_tokens − 1)` — a different
+  concurrency model *and* a different formula than GuideLLM's. If both tools ever get
+  used across studies, don't compare raw numbers directly: record which tool, which
+  rate-type/concurrency mode, and note that fixed-concurrency (AIPerf-style) runs can
+  look artificially stable under saturation compared to true open-loop (GuideLLM
+  `constant`/`poisson`, or `benchmark_serving.py`'s Poisson/gamma) runs at "the same"
+  load.
 - **Q3 — Optimization pack versions**: pack lifecycle (which parameters/metrics exist)
   is managed outside this repo. When a study starts, record in its README exactly which
   pack versions were installed at the time — packs can change independently of this repo.
@@ -173,6 +211,40 @@ self-contained). Update this file:
   verification metrics and backlog #3's energy-efficiency study), confirm via
   `akamas describe optimization-pack GPU` which granularity the installed pack's metric
   actually measures.
+- **Q6 — Is llm-d worth adopting for backlog #4's multi-replica work?** Per
+  `knowledge/notes/2026-07-llm-d-distributed-inference-platform.md`, llm-d is a
+  Kubernetes-native orchestration layer above vLLM (KV-cache-aware routing, prefill/
+  decode disaggregation, SLO-aware autoscaling via `InferencePool`/`InferenceModel`
+  CRDs) — same category as Dynamo's Planner/aiconfigurator already tracked here: a
+  topology/deployment choice made *before* a study starts, not a vLLM parameter change.
+  It's N/A for this repo's current single-GPU/single-replica scope; revisit only once
+  backlog #4/H4-H6 actually reach multi-replica territory. If adopted then, llm-d's own
+  routing/scaling policy (EPP scoring weights, prefill:decode pool ratio, autoscaling
+  SLO targets) would need a **new routing-component pack type** — not an extension of
+  the existing vLLM component — flag as a fresh pack request at that time rather than
+  now. **Concrete, falsifiable thresholds for when disaggregation (llm-d, Dynamo, or
+  otherwise) is worth it at all**, per
+  `knowledge/notes/2026-07-inference-engineering-techniques-quantization-speculation-parallelism.md`:
+  reach for it only when **all three** hold — serving 100M-1B+ tokens/day (scale-
+  dependent on model size), serving a model of at least ~100B parameters, and traffic
+  that is prefill-heavy with long input sequences. This repo's studies (single 7B-class
+  model, single replica, no production traffic) fail the first two cleanly — a sharper,
+  more falsifiable statement than the previous qualitative "N/A until multi-replica
+  scope," worth citing here instead of just asserting non-applicability.
+- **Q7 — Does this repo's telemetry config actually point at vLLM's real Prometheus
+  metric names?** Per
+  `knowledge/notes/2026-07-generative-ai-on-kubernetes-model-observability.md`, vLLM
+  exposes metrics under names like `vllm:time_to_first_token_seconds`,
+  `vllm:num_requests_waiting`, `vllm:prompt_tokens_total`/`vllm:generation_tokens_total`
+  (distinct from — and not fully mirrored by — OpenTelemetry's competing semantic-
+  convention names, e.g. no OTel equivalent exists for the throughput metric at all).
+  This repo's `telemetry-instance` configs (e.g.
+  `studies/0-explorative/akamas/telemetry/prometheus.yaml`) were inherited from the
+  pre-restructure setup and, per that study's own README, were never independently
+  re-verified against a live vLLM `/metrics` endpoint. Worth a one-time check (e.g.
+  `curl <vllm-pod>:8000/metrics` against a running study) that every `vLLM.*` Akamas
+  metric identity actually maps to the real underlying vLLM metric name, before trusting
+  results from a study whose telemetry config was copied forward rather than verified.
 - **Operating practice — diagnosing anomalous study runs**: per
   `knowledge/notes/2026-07-distributed-inference-blueprints-troubleshooting.md`'s
   troubleshooting playbook, when a study's results look off, check TTFT and TPOT
@@ -198,6 +270,25 @@ self-contained). Update this file:
   in-flight requests and look like a vLLM-parameter effect. Freeze/disable autoscaling
   (or pin replica count) during a controlled experiment, or explicitly account for
   autoscaling events in that study's methodology if it's testing the autoscaler itself.
+  **This generalizes beyond Dynamo's Planner** — per
+  `knowledge/notes/2026-07-kubernetes-cluster-config-autoscaling-multitenancy.md`, an
+  open vLLM RFC (vllm-project/vllm#24885) confirms vLLM's own SIGTERM handling has been
+  **inconsistent historically**: it doesn't reliably wait for in-flight requests to
+  finish today, regardless of which autoscaler (KEDA/HPA included) triggers the
+  scale-down. Until that's hardened upstream, this practice applies to *any*
+  autoscaler-driven scale-down of vLLM pods, not just Dynamo-specific tooling. If
+  backlog #4 does add autoscaling, the same note names concrete tools to evaluate: KEDA
+  (pod-level, scales on `vLLM.num_requests_waiting` — a metric this repo's telemetry
+  already tracks), Karpenter (node-level provisioning, complementary to KEDA not an
+  alternative), and Kueue (multi-tenant GPU quota fairness, if the cluster is ever
+  shared across studies/teams). **Concrete knob names any such autoscaling parameter
+  set would need to expose**, per
+  `knowledge/notes/2026-07-inference-engineering-production-autoscaling-deployment.md`:
+  min replicas, max replicas, autoscaling window (sliding timeframe for decisions),
+  scale-down delay (grace period before removing a replica), and concurrency target
+  (requests per replica before scaling up — must match the replica's actual batch-size
+  configuration or the autoscaler's capacity model is wrong). Worth using as a checklist
+  once backlog #4 is actually scoped, not a new pack-request by itself.
 
 ## B. Prioritized study backlog
 
@@ -235,6 +326,33 @@ Once scaffolded, replace the `<tbd>` row above with the real study name and a li
   targets.
 
 ### Debt / non-study actions
+- [ ] **Evaluate Run:ai Model Streamer to cut per-experiment model-load time**, per
+      `knowledge/notes/2026-07-generative-ai-on-kubernetes-production-tuning-routing.md`.
+      Every Akamas experiment in this repo's studies pays a 5-15 min model-load cost
+      before the actual load test starts (see `studies/0-explorative/README.md`'s own
+      timing notes) — model loading is called out as the single biggest lever in vLLM's
+      startup-time breakdown. `--load-format runai_streamer` (with
+      `--model-loader-extra-config '{"concurrency": 16}'`) needs no model repackaging,
+      unlike CoreWeave Tensorizer/fastsafetensor which require pre-serialization — worth
+      trying against this repo's actual model/PVC setup before committing to any
+      pre-serialization approach. Not an Akamas parameter — a workflow/Deployment-level
+      flag change to test manually, potentially cutting wall-clock time across every
+      future study's experiment count. **Second, independent motivation for this same
+      evaluation**, per
+      `knowledge/notes/2026-07-inference-engineering-production-autoscaling-deployment.md`:
+      quantizing model weights also speeds up *cold-start* loading time itself, not just
+      steady-state inference throughput — this repo's per-experiment model-load cost is
+      exactly a cold-start cost, so this is a second lever (alongside Model Streamer)
+      worth testing, not just an inference-throughput side effect.
+- [ ] **If vLLM's multi-node Ray executor backend is ever adopted** (for TP/PP spanning
+      multiple nodes, per H5's "minimum TP that fits" discussion), check
+      `knowledge/notes/2026-07-generative-ai-on-kubernetes-training-job-scheduling.md`'s
+      security caveat first: Ray ships with **no built-in authentication/encryption by
+      default** (explicitly documented as "not built for use in untrusted environments") —
+      any process with network access to the Ray cluster can execute arbitrary code.
+      Mitigation is a Kubernetes `NetworkPolicy` deny-all-by-default + explicit allow
+      rules scoped to the Ray cluster's pods, not something vLLM configures itself. N/A
+      for every study so far (all single-node) — flagged for if/when this changes.
 - [ ] **SECURITY**: this repo's git history contains a real, unencrypted private SSH key
       committed in an earlier revision (path `akamas/workflows/id_rsa` at the time).
       Revoke/rotate it wherever it grants access, and treat it as compromised regardless
@@ -261,7 +379,15 @@ Once scaffolded, replace the `<tbd>` row above with the real study name and a li
       has high input/output overlap: per
       `knowledge/notes/2026-07-speculative-decoding-survey.md`, the achievable speedup
       for such workloads (9–12× for grammar-correction-like tasks, 2–3× for RAG) is
-      categorically larger than for general chat (~1.5–2.5×)), KV cache dtype/quantization
+      categorically larger than for general chat (~1.5–2.5×)). **Sharper operational
+      nuance for this same ask**, per
+      `knowledge/notes/2026-07-inference-engineering-techniques-quantization-speculation-parallelism.md`:
+      production engines don't just see speculative decoding's benefit shrink at large
+      batch sizes, they **dynamically disable it** once compute saturates and there's no
+      longer spare capacity to afford draft-token verification — if/when this parameter
+      is added to the installed pack, confirm whether it needs to be modeled as a static
+      method/draft-model choice alone or should also expose a batch-size-conditional
+      toggle to match how production engines actually behave. KV cache dtype/quantization
       (`--kv-cache-dtype`, FP8/FP4 —
       the more plausible near-term ask since it's a single per-instance flag), and
       KV-transfer connector selection / disaggregated pool topology (the latter is a
@@ -295,8 +421,10 @@ Once scaffolded, replace the `<tbd>` row above with the real study name and a li
       with real load testing (GuideLLM, per Q2) rather than trusting its simulated
       estimate alone.
 - [ ] **Confirm whether the target cluster has a GPU-sharing scheduler** (NVIDIA
-      Run:ai, MIG, time-slicing, or MPS) before scoping backlog #4's replica-count
-      study, per `knowledge/notes/2026-07-gpu-fractioning-nvidia-runai.md`. If one is
+      Run:ai, MIG, time-slicing, MPS, or a Dynamic Resource Allocation (DRA) driver)
+      before scoping backlog #4's replica-count study, per
+      `knowledge/notes/2026-07-gpu-fractioning-nvidia-runai.md` and
+      `knowledge/notes/2026-07-kubernetes-gpu-scheduling-patterns.md`. If one is
       available, backlog #4 should test GPU-fraction-per-replica (not just replica
       count) as an additional dimension — this is a cluster/infra capability, not
       something the installed vLLM/Kubernetes packs currently model (confirm with
@@ -307,8 +435,22 @@ Once scaffolded, replace the `<tbd>` row above with the real study name and a li
       work. This isn't a binary yes/no — per
       `knowledge/notes/2026-07-ai-systems-performance-serving-tuning-checklist.md`, MIG
       (hard-partitioned GPU instances, up to 7 slices, guaranteed resources but
-      unsuitable for tightly-coupled parallel jobs like TP-sharded inference) and MPS
-      (soft concurrent kernel sharing across processes, no hard isolation) are two
-      distinct mechanisms with different trade-offs from each other and from Run:ai's
-      fractional scheduler — confirm which one (if any) specifically, not just whether
-      "a scheduler" exists.
+      unsuitable for tightly-coupled parallel jobs like TP-sharded inference — confirmed
+      by `2026-07-kubernetes-gpu-scheduling-patterns.md`: MIG instances don't expose
+      NVLink between them, so TP≥2 can't span MIG slices) and MPS (soft concurrent
+      kernel sharing across processes, no hard isolation) are two distinct mechanisms
+      with different trade-offs from each other and from Run:ai's fractional scheduler —
+      confirm which one (if any) specifically, not just whether "a scheduler" exists.
+      Also check the cluster's **Kubernetes version**: DRA (the newer, more expressive
+      API for partial/topology-aware device requests) graduated to GA in **v1.34**
+      (Sept 2025) — if the cluster predates that, DRA-based fractional GPU requests
+      aren't available regardless of which GPU-sharing mechanism is otherwise installed.
+      **Correction, per `2026-07-generative-ai-on-kubernetes-gpu-production-patterns.md`**:
+      even on a v1.34+ cluster, **NVIDIA's own DRA driver is still a technical preview
+      as of early 2026, not supported for production** — don't treat DRA as a viable
+      path yet regardless of Kubernetes version; the device-plugin + label-based
+      scheduling model (nodeSelector/affinity/taints, per the same source) remains the
+      thing to actually check for and use today. Same source also notes MIG's
+      isolation/granularity trade-off is explicitly framed as suited to *many small
+      models sharing a GPU*, not this repo's single-large-model-per-GPU case — worth
+      keeping in mind if backlog #4 is ever scoped around MIG specifically.

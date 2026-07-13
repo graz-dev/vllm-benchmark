@@ -17,7 +17,11 @@ Keep it short — this is a distillation, not a summary of the whole source.
 ## Levers / parameters touched
 
 <Which knobs does the source vary or discuss — e.g. batch size, KV cache block size,
-scheduling policy, tensor/pipeline parallelism degree, quantization. Be specific.>
+scheduling policy, tensor/pipeline parallelism degree, quantization. Be specific. For a
+serving-tooling, load-testing, or Kubernetes/infra source without tunable "knobs" in the
+parameter sense, name the equivalent design choice instead — e.g. which load-testing
+tool and its measurement methodology, which autoscaler/GPU-sharing mechanism, which
+disaggregation topology.>
 
 ## Key results
 
@@ -36,4 +40,7 @@ particular GPU family or model size).>
 <Map the source's findings onto concrete `vLLM.*` / `GPU.*` / Kubernetes component
 parameters. If it suggests a parameter or metric that isn't modeled by any installed
 optimization pack, say so explicitly — that's a request for whoever manages optimization
-packs (outside this repo), not something to build here.>
+packs (outside this repo), not something to build here. If the source is a tooling,
+load-testing, or infra pattern rather than a tunable parameter, say "N/A" here and
+instead note whether it should become a `ROADMAP.md` open question/backlog idea — a
+source doesn't need to map onto a parameter to be worth a note.>
