@@ -11,7 +11,7 @@ what's actually been built and found).
 
 | Study folder | Status | Configured as | Observed |
 |---|---|---|---|
-| [0-explorative](0-explorative/README.md) | TODO | | |
+| [0-explorative](0-explorative/README.md) | DONE | vLLM (16/26 params), Qwen2.5-7B-Instruct on 1x A10G, attention_backend/kv_cache_dtype/gpu_memory_utilization/max_num_seqs the levers that mattered | +12.5% throughput vs. baseline (`FLASHINFER`+`fp8_e4m3`+`block_size=32`), with lower latency and higher success rate too — not a trade-off |
 
 ## Maintaining this table
 

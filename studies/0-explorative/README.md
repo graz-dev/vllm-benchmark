@@ -1,7 +1,7 @@
 # 0-Explorative
 
-**Status:** TODO
-**Dates:** 2026-07-09 – <end>
+**Status:** DONE
+**Dates:** 2026-07-09 – 2026-07-10
 
 ## Objective
 
@@ -537,8 +537,119 @@ isn't a safe stand-in for the deployed version without this kind of per-tag chec
 
 ## Results
 
-<Filled in by the study-recap skill once the study finishes.>
+Raw data: `studies/0-explorative/results/export.gz` (full Akamas export — study/experiment/
+trial JSON plus per-metric time series).
+
+**Study outcome**: 84 total experiments (1 baseline + 83 optimize-step). 80 `FINISHED`,
+2 `FAILED_WORKFLOW` (experiments 11 and 26 — both root-caused during the study, see the
+"Incident" sections above: a memory-profiling gap around `max_num_seqs` × vocab size, and
+an infra-level PVC cold-cache timeout, respectively — neither is a lingering unknown),
+1 `ABORTED` (the study was manually stopped once results had converged, per
+`ROADMAP.md`'s backlog item for this study).
+
+**Best trial: experiment 21** — **+12.5%** over baseline on the goal metric
+(`vLLM.prefill_token_throughput + vLLM.decode_token_throughput`), and — notably — *not*
+a throughput/latency tradeoff: latency and success rate improved too, at this optimum.
+
+| Metric | Baseline (experiment 1) | Best (experiment 21) | Delta |
+|---|---|---|---|
+| Goal (prefill + decode throughput, tokens/s) | 3640.9 | 4096.2 | **+12.5%** |
+| `prefill_token_throughput` | 2925.9 | 3299.9 | +12.8% |
+| `decode_token_throughput` | 715.0 | 796.4 | +11.4% |
+| `e2e_request_latency_avg` (ms) | 52,924 | 47,063 | −11.1% |
+| `e2e_request_latency_p95` (ms) | 59,500 | 53,039 | −10.9% |
+| `request_success_rate` | 5.63 | 6.45 | +14.6% |
+
+Best trial's full configuration (parameters not listed kept at the baseline/pinned value):
+
+| Parameter | Baseline | Best (experiment 21) |
+|---|---|---|
+| `vLLM.attention_backend` | FLASH_ATTN | **FLASHINFER** |
+| `vLLM.kv_cache_dtype` | auto | **fp8_e4m3** |
+| `vLLM.block_size` | 16 | 32 |
+| `vLLM.dtype` | auto | float16 |
+| `vLLM.performance_mode` | balanced | throughput |
+| `vLLM.gpu_memory_utilization` | 0.92 | 0.9485 |
+| `vLLM.max_num_batched_tokens` | 2048 | 2542 |
+| `vLLM.max_num_seqs` | 128 | 124 |
+| `vLLM.optimization_level` | 2 | 1 |
+| `vLLM.max_cudagraph_capture_size` | 256 | 1023 |
+| `vLLM.disable_cascade_attn` | true | false |
+| `vLLM.tokenizer_mode` | auto | hf |
+| `vLLM.scheduling_policy` | fcfs | fcfs |
+| `vLLM.async_scheduling` | true | true |
+| `vLLM.enforce_eager` | false | false |
+
+Top 10 trials by score (all satisfy every `parameterConstraint`):
+
+| Rank | Experiment | Score | `attention_backend` | `kv_cache_dtype` | `block_size` | `performance_mode` |
+|---|---|---|---|---|---|---|
+| 1 | 21 | 4096.2 | FLASHINFER | fp8_e4m3 | 32 | throughput |
+| 2 | 73 | 4083.3 | FLASHINFER | fp8_e4m3 | 32 | interactivity |
+| 3 | 63 | 4017.8 | FLASHINFER | fp8 | 16 | throughput |
+| 4 | 4 | 3956.6 | TRITON_ATTN | auto | 48 | interactivity |
+| 5 | 34 | 3934.7 | FLASHINFER | fp8_e4m3 | 32 | throughput |
+| 6 | 32 | 3931.2 | FLASHINFER | fp8_e4m3 | 16 | throughput |
+| 7 | 71 | 3905.6 | FLASHINFER | fp8_e5m2 | 32 | throughput |
+| 8 | 75 | 3896.9 | FLASHINFER | fp8_e4m3 | 32 | balanced |
+| 9 | 70 | 3887.9 | TRITON_ATTN | auto | 16 | balanced |
+| 10 | 74 | 3885.1 | FLASHINFER | fp8_e4m3 | 32 | balanced |
+
+**Cross-cutting patterns** (across all 80 finished optimize-step trials, not just the
+top 10 — computed directly from the export, not eyeballed):
+
+- **`attention_backend` only wins paired with fp8 quantization.** Comparing
+  `attention_backend` values *within* `kv_cache_dtype=auto` only (the one setting all
+  three backends can use, an apples-to-apples slice): `TRITON_ATTN` averages 3252,
+  `FLASH_ATTN` 2983, and `FLASHINFER` a clear last at **2531** — `FLASHINFER` is the
+  *worst* backend when it can't use fp8. But restricting to `FLASHINFER` and varying
+  `kv_cache_dtype`: `auto`=2531 → `fp8_e5m2`=3101 → `fp8_e4m3`=3416 (n=25, the
+  best-sampled fp8 variant) → `fp8`=3605 (n=3, fewer samples, treat as noisier). So the
+  entire advantage `FLASHINFER` shows in the top 10 comes from pairing it with fp8
+  quantization specifically — not from `FLASHINFER` being intrinsically faster. This
+  directly confirms, with real optimizer-driven throughput data, why the manual
+  verification and the `parameterConstraints` work earlier in this study (restricting
+  fp8-family `kv_cache_dtype` to `FLASHINFER` only) mattered for more than just avoiding
+  crashes.
+- **`gpu_memory_utilization` has only a weak correlation with the goal metric**
+  (Pearson r ≈ 0.15 across all finished trials) despite this study narrowing its domain
+  to `[0.85, 0.95]` specifically to stay safely above the OOM threshold found early on.
+  It's a minor, not a dominant, lever for this workload/hardware — consistent with
+  `max_num_seqs`/`max_num_batched_tokens`/`attention_backend`+`kv_cache_dtype` mattering
+  more for how much concurrency is actually usable.
+- `block_size=32` appears in 7 of the top 10 trials (and is the modal winning value
+  generally) — plausibly a sweet spot for this model's head_dim=128/GQA config, though
+  not verified against vLLM source beyond what's already documented under "Parameter
+  constraints" above.
 
 ## Conclusions
 
-<Filled in by the study-recap skill once the study finishes.>
+- **The optimizer found a genuine, non-tradeoff improvement**: +12.5% on the throughput
+  goal, with lower latency and higher success rate too — not a case of trading one for
+  the other. A latency-SLO-constrained follow-up study (mentioned as a natural next step
+  in "Objective" above) is less urgent than originally assumed, at least within the
+  parameter ranges this study explored; it may still be worth doing to explore regions
+  this run didn't prioritize.
+- **Generalizable**: the pattern "a backend/dtype combination that looks like it merely
+  'avoids crashing' can also be the actual best-performing choice" (`FLASHINFER` +
+  `fp8`-family `kv_cache_dtype`) is a useful reminder for future studies — don't treat
+  `parameterConstraints` derived from crash investigation as purely defensive; they can
+  also be pointing at the interesting part of the search space. The *specific* winning
+  combination (`FLASHINFER`+`fp8_e4m3`+`block_size=32`) is tied to this study's exact
+  stack (Qwen2.5-7B-Instruct, single A10G, vLLM 0.22.0) and should not be assumed to
+  transfer to a different model/GPU/vLLM version without re-verification.
+- **`gpu_memory_utilization`'s weak observed correlation with throughput** (despite
+  being the target of this study's OOM-driven domain narrowing) suggests that for a
+  future study on this same stack, spending less parameter-space "budget" on it (e.g. a
+  narrower, pre-fixed range) and more on `attention_backend`/`kv_cache_dtype`/
+  `max_num_seqs`/`max_num_batched_tokens` combinations could converge faster.
+  This is specific to this workload shape (GuideLLM, fixed 512+128 token requests,
+  throughput-rate benchmark) — a latency-sensitive or longer-context workload could
+  behave differently.
+- **Process takeaway**: the two failed experiments (11, 26) were both root-caused live,
+  during the study, via direct `kubectl` access and vLLM source cross-referencing — not
+  left as unexplained noise. Neither pointed to a flaw in the final `parameterConstraints`
+  set that would recur on a re-run of this exact study; one was a memory-accounting gap
+  vLLM itself doesn't guard against (`max_num_seqs` × vocab-size sampler warmup, not
+  covered by `gpu_memory_utilization`'s own budget), the other was cluster/PVC-level
+  flakiness unrelated to any sampled parameter.

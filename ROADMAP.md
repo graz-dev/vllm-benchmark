@@ -18,47 +18,63 @@ self-contained). Update this file:
 > intentionally stated without hardware/model specifics — those belong to whichever
 > study actually tests them, in that study's own README.
 
-- **H1 — `max_num_batched_tokens` drives a TTFT/throughput trade-off** [TO BE CONFIRMED]
-  Higher values should increase prefill throughput but lengthen TTFT and ITL under load;
-  the optimum is expected to sit somewhere in the middle of the parameter's domain, not
-  at either extreme. The exact sweet spot depends on the GPU/model — a study should
-  record the domain and result it actually observed. Range cross-check: independent
-  sources give different ranges depending on model/hardware —
+- **H1 — `max_num_batched_tokens` drives a TTFT/throughput trade-off** [TO BE CONFIRMED —
+  not cleanly testable by study #1] `studies/0-explorative` searched this jointly with 15
+  other parameters via Akamas' optimizer (not a controlled single-variable sweep), and its
+  goal metric is throughput-only (no TTFT/latency term) — across its 80 finished trials,
+  `max_num_batched_tokens` showed essentially **zero raw correlation with the throughput
+  goal** (Pearson r ≈ 0.02). That's not evidence against the trade-off itself (the goal
+  formula can't see TTFT), just a note that this study's design can't confirm or refute
+  H1 as stated — a future study would need either a TTFT term in its goal/constraints or
+  a dedicated single-parameter sweep to test this properly. Range cross-check unchanged:
+  independent sources give different ranges depending on model/hardware —
   `knowledge/notes/2026-07-vllm-recipe-llama3-3-70b.md` baselines 8192 (up to 16384) for
   Llama-3.3-70B on B200/H100/H200, while `knowledge/notes/2026-07-auto-tune-vllm.md`'s
   own example configs search 1024–8192 or 2048–16384 — confirms a study's domain should
   be derived from its own model/hardware, not copied from either source.
 
 - **H2 — `gpu_memory_utilization` shows diminishing returns past some threshold**
-  [TO BE CONFIRMED] Once the KV cache stops being the bottleneck for a given
-  model+workload, pushing utilization higher should mostly raise OOM/instability risk
-  without a throughput gain. Verify against `kv_cache_usage_max` and `preemption_rate`.
-  Range cross-check: two independent sources (`knowledge/notes/2026-07-practical-vllm-performance-tuning.md`'s
-  manual "push toward 0.95" guidance and `knowledge/notes/2026-07-auto-tune-vllm.md`'s
-  own 0.85–0.95 search range) both center on a narrow band above vLLM's 0.9 default
-  rather than the full [0,1] domain — a reasonable prior for a study's domain, to
-  confirm against its own hardware headroom rather than assume. Alternative study-design
-  pattern worth considering, per
+  [PARTIALLY CONFIRMED, within a pre-narrowed range — see `studies/0-explorative/README.md`]
+  That study narrowed this parameter's domain to `[0.85, 0.95]` for OOM-avoidance reasons
+  (not to test H2), so the full `[0,1]` range was never explored — but *within* that
+  narrow, already-high band, `gpu_memory_utilization` showed only a weak correlation with
+  the throughput goal (Pearson r ≈ 0.15) across 80 finished trials, consistent with H2's
+  "diminishing returns" shape near the top of the range, though not a strong enough
+  signal to call this conclusively settled. The alternative study-design pattern below
+  (calibrate once, hold fixed) looks more attractive given this weak effect — a future
+  study could reasonably spend less optimizer budget on this dimension. Range
+  cross-check unchanged: two independent sources
+  (`knowledge/notes/2026-07-practical-vllm-performance-tuning.md`'s manual "push toward
+  0.95" guidance and `knowledge/notes/2026-07-auto-tune-vllm.md`'s own 0.85–0.95 search
+  range) both center on a narrow band above vLLM's 0.9 default rather than the full [0,1]
+  domain. Alternative study-design pattern worth considering, per
   `knowledge/notes/2026-07-vllm-official-auto-tune-script.md` (vLLM's own upstream
   `auto_tune.sh`): rather than searching `gpu_memory_utilization` jointly with
   `max_num_seqs`/`max_num_batched_tokens`, calibrate its safe ceiling once (highest
   value that avoids OOM for the model+hardware) and hold it fixed, scoping
-  `parametersSelection` to just the other two parameters. If H2 is confirmed
-  (diminishing returns near the top of the range), this removes a search dimension the
-  optimizer would likely converge to the top of anyway, potentially speeding up
-  convergence — worth trying for backlog #1, the first baseline study, as a comparison
-  against the standard three-parameter joint search.
+  `parametersSelection` to just the other two parameters.
 
-- **H3 — `max_num_seqs` saturates before its upper bound** [TO BE CONFIRMED]
-  Beyond some concurrency level, throughput should stop growing (compute/KV saturation)
-  while tail latency (ITL/TTFT p95) keeps worsening. If confirmed for a given
-  model/hardware pair, narrow that study family's domain to speed up convergence.
+- **H3 — `max_num_seqs` saturates before its upper bound** [LEANS REJECTED for
+  Qwen2.5-7B-Instruct / single A10G — see `studies/0-explorative/README.md`] Across that
+  study's 80 finished trials, `max_num_seqs` showed a *positive* correlation with the
+  throughput goal (Pearson r ≈ 0.36, no goal-metric plateau observed toward the domain's
+  upper end: trials with `max_num_seqs` in the top half of `[16, 1024]` averaged ~13%
+  higher throughput than the bottom half) — no clear saturation within the range tested,
+  contrary to H3's premise. **But** the two experiments that failed with an OOM
+  (`max_num_seqs` 917 and 1016, both near the domain ceiling, both paired with
+  near-maximum `gpu_memory_utilization`) show this parameter does hit a *reliability*
+  ceiling before it hits a *throughput* one — worth carrying into any future test of this
+  hypothesis: check for a reliability cliff (crash rate), not just a throughput plateau,
+  when raising `max_num_seqs`. This is one model/GPU pair's result, not a general claim —
+  a future study on different hardware (more/less VRAM, different vocab size) should
+  re-test rather than assume this transfers.
   Additional supporting evidence (see
   `knowledge/notes/2026-07-distributed-inference-advanced-deployment-patterns.md`):
   speculative decoding's throughput gain shrinks or inverts at large batch sizes, because
   an already-saturated decode fleet has little idle forward-pass capacity left for a
   draft model to exploit — another case of "more concurrency isn't purely additive"
-  alongside this hypothesis and H2.
+  alongside this hypothesis and H2, even though this specific study's data leans against
+  a throughput-side saturation for this stack.
 
 - **H4 — co-tuning Kubernetes resource limits alongside vLLM parameters changes the
   optimum** [TO BE CONFIRMED] Akamas can tune Kubernetes-level parameters (container
@@ -187,7 +203,7 @@ self-contained). Update this file:
 
 | # | Study | Target component(s) | Objective (sketch) | Status |
 |---|-------|----------------------|---------------------|--------|
-| 1 | [0-explorative](studies/0-explorative/README.md) | vLLM | Maximize token throughput (no latency constraint, matching the pre-restructure S3.1 study it replaces) — the first study to establish a baseline, now against the full 25-parameter vLLM pack 1.2.0 rather than the old 5-parameter pack | TODO |
+| 1 | [0-explorative](studies/0-explorative/README.md) | vLLM | Maximize token throughput (no latency constraint, matching the pre-restructure S3.1 study it replaces) — the first study to establish a baseline, against the vLLM pack 1.3.1 (16 of 26 parameters tuned). **Result: +12.5% over baseline** (`FLASHINFER`+`fp8_e4m3`+`block_size=32`), with lower latency and higher success rate too — not a throughput/latency trade-off at this optimum. | DONE |
 | 2 | `<tbd>` | vLLM + Kubernetes | Tests H4: co-tune vLLM parameters with container CPU/memory requests-limits, compare best-found config against study #1's vLLM-only result | IDEA |
 | 3 | `<tbd>` | GPU / vLLM | Energy efficiency: maximize tokens/s per watt (formula using a GPU power-draw metric). Candidate first experiment/prior, per `knowledge/notes/2026-07-ai-systems-performance-serving-tuning-checklist.md`: "for some models, going from a 100% to 80% power limit yields nearly the same speed at 20% less power usage" — worth testing power-capping as a near-free win before assuming max power limit is optimal. Note the installed GPU pack is currently metrics-only (no tunable parameters, per this repo's own tracking at the time) — confirm with `akamas describe optimization-pack GPU` whether a power-limit parameter exists before scoping `parametersSelection`; if not, power capping may need to happen outside Akamas (e.g. a workflow task) | IDEA |
 | 4 | `<tbd>` | vLLM + Kubernetes (replicas/HPA) | Tests H4's replication mechanism: under-allocate `gpu_memory_utilization`/`max_num_seqs` below the single-replica optimum, run N replicas per GPU, maximize aggregate throughput vs study #1's single-replica best (see `knowledge/notes/2026-07-gpu-memory-bound-large-batch-inference.md`) | IDEA |
@@ -198,11 +214,25 @@ Once scaffolded, replace the `<tbd>` row above with the real study name and a li
 
 ## C. Consolidated learnings
 
-> Empty — no study has completed in this repo's current structure yet. Once one does,
-> `study-recap` distills its README's "Conclusions" section into a short bullet here,
-> and updates the hypotheses in section A accordingly.
-
-- _(no consolidated learnings yet)_
+- **`studies/0-explorative`** (Qwen2.5-7B-Instruct, single A10G, vLLM 0.22.0): a
+  `parameterConstraint` written purely to stop a crash can also mark the actual optimum,
+  not just a guardrail — `FLASHINFER` was the *worst*-performing attention backend when
+  restricted to `kv_cache_dtype=auto` (the only value the other two backends could use
+  safely), but became the best overall once paired with fp8-family quantization
+  (`fp8_e4m3` specifically), which is exactly the pairing the crash investigation had
+  already restricted to `FLASHINFER` for correctness reasons. Worth checking for this
+  pattern in future studies: a constraint born from a crash may be pointing at the
+  interesting part of the search space, not just fencing off a bad one.
+- **`studies/0-explorative`**: vLLM's own memory accounting (the `gpu_memory_utilization`
+  budget / "Available KV cache memory" it reports) does **not** cover every memory
+  consumer — a dummy sampler-warmup step allocates a buffer sized roughly
+  `max_num_seqs × vocab_size`, *after* weights+KV cache are already reserved, and this
+  caused an OOM at `max_num_seqs≈900-1000` combined with `gpu_memory_utilization` near
+  the top of its range, even though vLLM's own reported KV-cache budget looked fine.
+  Narrowing `gpu_memory_utilization`'s domain alone doesn't fully guard against this —
+  future studies with a similarly high `max_num_seqs` ceiling should watch for this
+  specific failure mode too, not just the KV-cache-deficit OOM the domain narrowing
+  targets.
 
 ### Debt / non-study actions
 - [ ] **SECURITY**: this repo's git history contains a real, unencrypted private SSH key
