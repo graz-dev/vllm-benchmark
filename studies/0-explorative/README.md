@@ -538,7 +538,16 @@ isn't a safe stand-in for the deployed version without this kind of per-tag chec
 ## Results
 
 Raw data: `studies/0-explorative/results/export.gz` (full Akamas export — study/experiment/
-trial JSON plus per-metric time series).
+trial JSON plus per-metric time series). **Full deep-dive analysis**:
+[`results/report.html`](results/report.html) — per-parameter effect breakdowns across
+*every* tracked metric (not just the goal), pairwise parameter interactions, a timeseries
+deep-dive, and data-quality caveats; open it directly in a browser. Notable findings from
+that deeper pass not repeated in full here: the goal-winner (experiment 21) is *not* the
+individual best for 3 of the study's 4 tracked KPIs (decode throughput, ITL, TTFT each
+peak on a different experiment); `max_num_seqs`'s throughput gain correlates strongly with
+higher KV-cache pressure and preemption rate even among successful trials, not just the 2
+OOM failures; and `block_size`'s best value depends on both `attention_backend` and
+`kv_cache_dtype` rather than being a single constant.
 
 **Study outcome**: 84 total experiments (1 baseline + 83 optimize-step). 80 `FINISHED`,
 2 `FAILED_WORKFLOW` (experiments 11 and 26 — both root-caused during the study, see the
