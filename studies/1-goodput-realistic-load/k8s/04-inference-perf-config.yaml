@@ -59,6 +59,17 @@ data:
       model_name: qwen2.5-7b
       base_url: http://vllm.llm-serving.svc.cluster.local:8000
 
+    # REQUIRED, added 2026-07-16 after a real failed run: inference-perf uses
+    # server.model_name for two DIFFERENT purposes — routing API requests (where
+    # "qwen2.5-7b", vLLM's --served-model-name, is correct) and loading the tokenizer
+    # via HuggingFace's AutoTokenizer.from_pretrained (where "qwen2.5-7b" is not a
+    # valid HF repo id and fails with "is not a local folder and is not a valid model
+    # identifier"). tokenizer.pretrained_model_name_or_path overrides just the
+    # tokenizer lookup with the real HF repo id, confirmed against inference-perf's
+    # own docs/config.md "Tokenizer" section and its full-config examples.
+    tokenizer:
+      pretrained_model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+
     # inference-perf queries the *target's* Prometheus for correlated metrics —
     # this does not replace Akamas' own telemetry (akamas/telemetry/prometheus.yaml
     # scrapes the same Prometheus instance directly for the goal/constraint metrics;
