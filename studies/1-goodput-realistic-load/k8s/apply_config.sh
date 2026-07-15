@@ -13,20 +13,25 @@ for flag in enforce-eager disable-cascade-attn async-scheduling enable-expert-pa
   sed -i "s/--${flag}=false/--no-${flag}/" "$DEPLOY_FILE"
 done
 
-# --- Step 2: strip any still-unsubstituted vLLM parameter token (baseline step) ---
-# The baseline step's `doNotRenderParameters: ["vLLM.*"]` (see akamas/1-Goodput-Realistic-Load.yaml)
-# tells Akamas not to compute a value for ANY vLLM.* parameter for that step, so this
-# study's baseline is a genuinely "bare" vLLM startup (just model/port/host), not every
-# tunable flag re-stated at its default. With `ignoreUnsubstitutedTokens: true` on the
-# workflow's FileConfigurator task (confirmed via Akamas' own live docs, 2026-07-15:
-# https://docs.akamas.io/akamas-docs/reference/workflow-operators/fileconfigurator-operator.md),
-# any ${vLLM.*} token with no computed value is left as the literal unsubstituted string
-# in the rendered file rather than causing a failure — this step removes those lines
-# entirely so the baseline command only has the flags hardcoded directly in the template
-# (never any literal "${vLLM.foo}" text, which would otherwise break vLLM's argv parsing).
-# This is a generic rule — it does nothing on optimize-step trials, where every ${vLLM.*}
-# token in the template DOES get a real computed value and this pattern never matches.
-sed -i '/\${vLLM\./d' "$DEPLOY_FILE"
+# --- Step 2: strip any vLLM parameter flag left with no rendered value (baseline step) ---
+# The baseline step excludes 29 of the 30 vLLM.* parameters from doNotRenderParameters
+# (see akamas/1-Goodput-Realistic-Load.yaml) so this study's baseline is a genuinely
+# "bare" vLLM startup (just model/port/host + gpu_memory_utilization=0.90), not every
+# tunable flag re-stated at its default.
+#
+# CORRECTED 2026-07-16 (observed directly from a real baseline rollout): an excluded
+# parameter's ${vLLM.*} token is NOT left as literal unsubstituted text — Akamas
+# substitutes it with an EMPTY STRING instead, e.g. `- "--max-num-seqs=${vLLM.max_num_seqs}"`
+# renders to `- "--max-num-seqs="`. The original assumption here (that
+# ignoreUnsubstitutedTokens leaves the literal "${vLLM.foo}" string in place) was wrong;
+# stripping only literal unsubstituted tokens left 28 blank `--flag=` args in the
+# rendered command — vLLM's argparse rejects an empty value for any int/float/enum flag,
+# so the baseline pod was crashing on startup. Both patterns are stripped below (the
+# empty-value case is the real one; the literal-token case is kept as defense-in-depth
+# in case behavior ever differs). This is a generic rule — it does nothing on
+# optimize-step trials, where every ${vLLM.*} token gets a real, non-empty computed
+# value and neither pattern matches.
+sed -i -E '/\$\{vLLM\./d; /^[[:space:]]*-[[:space:]]*"--[A-Za-z0-9_-]+="[[:space:]]*$/d' "$DEPLOY_FILE"
 
 # --- Step 3: drop speculative decoding flags entirely when disabled ---
 # vLLM.spec_method's "none" value (the pack's own default, meaning "speculative decoding

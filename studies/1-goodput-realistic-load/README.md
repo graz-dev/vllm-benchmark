@@ -99,15 +99,14 @@ same stack); 1 (`compilation_mode`) is deliberately excluded, same reason as
 for every tuned parameter. This study's baseline instead renders **only**
 `vLLM.gpu_memory_utilization`, pinned to **0.90**; all other 28 pack parameters
 (the 16 other tuned params, `spec_method`/`spec_tokens`, and the 11 pinned params)
-are excluded from computation and left unrendered, so vLLM applies its own real
-startup defaults for all of them. The deployed command ends up close to a genuinely
+are excluded from computation, so the rendered command ends up close to a genuinely
 bare `vllm serve <model> --port=8000 --host=0.0.0.0 --served-model-name=...
 --enable-mfu-metrics --gpu-memory-utilization=0.90`, not every tunable flag re-stated
 at a default value. The `optimize` step sets neither of these fields, so Akamas stays
 fully free to pick any `parametersSelection` value there — this restriction is
 baseline-only.
 
-This is a deliberate 2026-07-15/16 design, arrived at over two corrections:
+This is a deliberate 2026-07-15/16 design, arrived at over three corrections:
 
 1. `renderParameters`/`doNotRenderParameters` were initially assumed to omit CLI flags
    from the rendered template directly — confirmed against Akamas' own live docs that
@@ -123,6 +122,16 @@ This is a deliberate 2026-07-15/16 design, arrived at over two corrections:
    `renderParameters` entirely and enumerating `doNotRenderParameters` explicitly as
    every pack parameter *except* `gpu_memory_utilization` (29 names, no wildcard) — see
    `akamas/1-Goodput-Realistic-Load.yaml`'s baseline step for the full list.
+3. **Corrected 2026-07-16 from an actual baseline rollout**: an excluded parameter's
+   `${vLLM.*}` token does **not** get left as literal unsubstituted text as originally
+   assumed — Akamas substitutes it with an **empty string** instead
+   (`- "--max-num-seqs=${vLLM.max_num_seqs}"` renders to `- "--max-num-seqs="`). Left
+   as-is, this crashes vLLM at startup — argparse rejects an empty value for any
+   int/float/enum flag. `apply_config.sh`'s Step 2 now strips these empty-value flag
+   lines (not just literal-unsubstituted-token lines, which it was originally written
+   to catch and which apparently never actually occurs) before the file is applied —
+   only after that strip does vLLM genuinely fall back to its own real startup
+   defaults for every excluded parameter.
 
 Two things worth spelling out about the resulting split:
 
@@ -148,11 +157,12 @@ The actual mechanism combines three pieces:
    baseline step (`akamas/1-Goodput-Realistic-Load.yaml`).
 2. `ignoreUnsubstitutedTokens: true` on the workflow's FileConfigurator task
    (`akamas/1-Goodput-Realistic-Load-Workflow.yaml`) — without this, FileConfigurator
-   would fail outright on the baseline's now-unsubstituted `${vLLM.*}` tokens.
-3. `apply_config.sh`'s Step 2 (`k8s/apply_config.sh`) strips any line still containing
-   a literal unsubstituted `${vLLM.` token before the file is applied — a generic rule
-   that does nothing on optimize-step trials (where every token gets a real computed
-   value).
+   would fail outright rather than render the excluded parameters' tokens as empty.
+3. `apply_config.sh`'s Step 2 (`k8s/apply_config.sh`) strips any line whose flag was
+   rendered with an empty value (`- "--flag="`), plus any line still containing a
+   literal unsubstituted `${vLLM.` token as defense-in-depth — a generic rule that does
+   nothing on optimize-step trials, where every token gets a real, non-empty computed
+   value.
 
 Pinned (not in `parametersSelection`, unchanged from `0-explorative` — same hardware,
 same vLLM version, same incidents apply):
