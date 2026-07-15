@@ -12,29 +12,61 @@ data:
     # Real dataset (ShareGPT multi-turn conversations), not synthetic fixed
     # prompt/output token counts — this is the whole point of this study vs.
     # 0-explorative's GuideLLM "prompt_tokens=512,output_tokens=128" setup.
-    # No `path` needed — confirmed from the tool's own official example
-    # (examples/vllm/config-sweep.yml): inference-perf fetches ShareGPT itself
-    # when only `type: shareGPT` is given.
+    #
+    # `path` points at a CLEANED copy, not inference-perf's own auto-download
+    # (which is what a bare `type: shareGPT` with no `path` does). Reason,
+    # confirmed 2026-07-15 from a real job crash: some entries in the raw
+    # dataset encode a conversation turn as a JSON string instead of a JSON
+    # object (upstream issue kubernetes-sigs/inference-perf#429).
+    # get_chat_data() (used for api.type: chat, our case) doesn't handle that
+    # case and crashes with "string indices must be integers, not 'str'",
+    # which aborts inference-perf's entire preprocessing stage — not a config
+    # mistake on our side, a real gap in that code path (the sibling
+    # get_completion_data() already works around it). 07-sharegpt-prep-job.yaml
+    # downloads the dataset once and normalizes every turn into a real object,
+    # mounted read-only here from the sharegpt-dataset PVC (see 05-job.yaml).
     data:
       type: shareGPT
+      path: /data/sharegpt/ShareGPT_V3_unfiltered_cleaned_split_fixed.json
 
-    # The "ramp": a linear sweep from a low rate up toward this server's own
-    # saturation point, in 10 discrete stages of 60s each (10 minutes total) —
-    # inference-perf's own vocabulary for this is "sweep", not "ramp" (confirmed
-    # 2026-07-15 against the tool's docs/source; there is no literal `ramp:` key).
-    # This directly serves the study's goal: sweeping from low to high load lets
-    # Akamas observe exactly where the TTFT/ITL constraints start being violated,
-    # which *is* the goodput ceiling this study is trying to maximize.
+    # The "ramp": explicit stages of increasing rate, 6 x 60s (6 minutes nominal —
+    # real per-trial wall-clock time is longer near saturation, see
+    # run_test_goodput.sh's own timeout comment). Cut from an original 10 stages
+    # (2026-07-16): a full 10-stage/60s run took ~43 minutes end-to-end once real
+    # queueing set in near saturation — at up to 1000 experiments, that's not
+    # tractable. 6 stages keeps the same 1-20 req/s range with a coarser step,
+    # trading some resolution on exactly where the SLA breaks for a per-trial cost
+    # that's actually survivable across a full optimize step.
+    #
+    # NOT load.sweep (the automatic saturation-point-discovery preprocessing phase)
+    # — confirmed 2026-07-16 from a real hung job: sweep's preprocessing stage hits
+    # a genuine upstream bug in run_stage()'s post-timeout cleanup (waits on
+    # active_requests_counter reaching 0 in a loop that never exits, even after
+    # vLLM itself reports num_requests_running=0 / num_requests_waiting=0 — i.e.
+    # the server has nothing in flight, but the client's own bookkeeping never
+    # clears). Bypassing sweep entirely avoids that code path.
+    #
+    # Rates below (1 to 20 req/s, linear) are a ROUGH GUESS at a range that spans
+    # under-saturated to over-saturated for a single A10G serving Qwen2.5-7B —
+    # NOT derived from this study's own saturation point (that's exactly what
+    # sweep would have measured, and we're bypassing it). Flagged as a placeholder
+    # to recalibrate once the baseline/first trials show real queueing behavior —
+    # same caveat as the TTFT/ITL thresholds and windowing maxStdDev below.
     load:
       type: constant
-      interval: 15
-      sweep:
-        type: linear            # geometric is also available; linear chosen for
-                                 # a smoother, more evenly-spaced ramp
-        timeout: 60
-        num_stages: 10
-        stage_duration: 60
-        saturation_percentile: 95
+      stages:
+        - rate: 1.0
+          duration: 60
+        - rate: 4.8
+          duration: 60
+        - rate: 8.6
+          duration: 60
+        - rate: 12.4
+          duration: 60
+        - rate: 16.2
+          duration: 60
+        - rate: 20.0
+          duration: 60
 
     api:
       type: chat                # Qwen2.5-7B-Instruct is an instruction/chat model

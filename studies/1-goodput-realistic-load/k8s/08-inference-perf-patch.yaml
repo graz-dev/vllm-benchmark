@@ -1,0 +1,100 @@
+# Monkey-patch for a real inference-perf bug in HFShareGPTDataGenerator.get_chat_data
+# (used whenever api.type: chat, our case).
+#
+# Root cause, confirmed 2026-07-16 by loading the dataset exactly as inference-perf
+# does (datasets.load_dataset("json", ...) + itertools.cycle) and inspecting the
+# actual Python types: HF `datasets`' JSON loader/PyArrow re-serializes each
+# conversation turn as a JSON STRING rather than a dict — this happens at LOAD TIME,
+# not because of anything wrong in the source file on disk. Cleaning the dataset file
+# itself (06/07, kept for a separate reason below) does not fix this: even a freshly
+# written file with real JSON objects for every turn comes back out of
+# datasets.load_dataset() as strings.
+#
+# get_completion_data()'s helper (get_conversation_turn_content) already handles a
+# turn arriving as a JSON string (json.loads it back into a dict) — this is the
+# documented workaround for kubernetes-sigs/inference-perf#429. get_chat_data() has
+# no equivalent handling and crashes with "string indices must be integers, not
+# 'str'" the moment it tries `conversation[self.role_key]` on a string, aborting
+# inference-perf's entire preprocessing stage.
+#
+# SECOND bug, confirmed 2026-07-16 from a real completed run's report (every stage's
+# Output Token Length was ~30 tokens flat, regardless of stage/rate): unlike
+# get_completion_data (which sets CompletionAPIData.max_tokens from the real
+# assistant turn's token count), the ORIGINAL get_chat_data never sets
+# ChatCompletionAPIData.max_tokens at all. That field defaults to 0, and
+# OpenAIModelServerClient.process_request falls back to
+# self.client.max_completion_tokens — hardcoded to 30 in
+# client/modelserver/openai_client.py — whenever a request's own max_tokens is 0.
+# So every chat request generated exactly ~30 output tokens regardless of the real
+# ShareGPT conversation's actual response length, undermining the realistic-load
+# goal (prompts were genuinely variable-length; outputs were not). Fixed below by
+# setting max_tokens from the real last turn's token count, mirroring
+# get_completion_data's own approach.
+#
+# This patches get_chat_data with both fixes, applied before inference-perf's own
+# entrypoint runs — see 05-job.yaml's container command.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inference-perf-patch
+  namespace: llm-benchmark
+data:
+  patched_entrypoint.py: |
+    import json
+    from inference_perf.datagen import hf_sharegpt_datagen
+    from inference_perf.apis import ChatCompletionAPIData, ChatMessage
+
+
+    def _patched_get_chat_data(self):
+        if self.tokenizer is None:
+            raise Exception("Tokenizer is required for chat API of HFShareGPTDataGenerator")
+        while True:
+            data = next(self.sharegpt_dataset)
+            if (
+                data is None
+                or data[self.data_key] is None
+                or len(data[self.data_key]) < self.min_num_turns
+                or len(data[self.data_key]) == 0
+            ):
+                continue
+
+            messages = []
+            ok = True
+            last_content = None
+            for conversation in data[self.data_key]:
+                if isinstance(conversation, str):
+                    # The actual bug: datasets.load_dataset() hands back each turn
+                    # as a JSON string instead of a dict. Parse it back, same as
+                    # get_conversation_turn_content() already does for the
+                    # completion API.
+                    try:
+                        conversation = json.loads(conversation)
+                    except json.JSONDecodeError:
+                        ok = False
+                        break
+                if not isinstance(conversation, dict):
+                    ok = False
+                    break
+                role = hf_sharegpt_datagen.SHAREGPT_HF_CHAT_ROLE_MAP.get(conversation[self.role_key], "user")
+                content = conversation[self.content_key]
+                messages.append(ChatMessage(role=role, content=content))
+                last_content = content
+
+            if not ok or last_content is None:
+                continue
+
+            # Target the real length of this conversation's last turn instead of
+            # leaving max_tokens at its 0 default (which falls back to a hardcoded
+            # 30 — see the note above this function).
+            max_tokens = self.tokenizer.count_tokens(last_content)
+            if max_tokens <= 0:
+                continue
+
+            yield ChatCompletionAPIData(messages=messages, max_tokens=max_tokens)
+
+
+    hf_sharegpt_datagen.HFShareGPTDataGenerator.get_chat_data = _patched_get_chat_data
+
+    from inference_perf.main import main_cli
+
+    main_cli()

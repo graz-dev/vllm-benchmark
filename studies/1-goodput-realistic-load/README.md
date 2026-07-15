@@ -22,7 +22,7 @@ Three deliberate changes from `0-explorative`, all in service of the same goal
    the real ShareGPT dataset (multi-turn conversations) instead of GuideLLM's synthetic
    fixed `prompt_tokens=512,output_tokens=128` shape.
 2. **Load pattern**: a linear sweep ("ramp") from low load toward this server's own
-   saturation point (10 stages × 60s), not a single fixed-rate throughput-seeking
+   saturation point (6 stages × 60s), not a single fixed-rate throughput-seeking
    benchmark — this directly surfaces *where* the latency SLA starts being violated,
    which is exactly the goodput ceiling this study is trying to find.
 3. **Parameter surface**: all of `0-explorative`'s 16 tuned parameters, plus the two
@@ -50,14 +50,15 @@ Three deliberate changes from `0-explorative`, all in service of the same goal
   atomic-per-study convention, but `infra/eks/provision.sh` will detect the cluster
   already exists and skip creation.
 - **Load generator:** `kubernetes-sigs/inference-perf`
-  (`quay.io/inference-perf/inference-perf:latest`), `data.type: shareGPT` (real
-  dataset, auto-fetched from the Hugging Face Hub —
-  `anon8231489123/ShareGPT_Vicuna_unfiltered`, confirmed from the tool's own source,
-  no local file needed), `load.sweep` (linear, 10 stages × 60s) — see
-  `k8s/04-inference-perf-config.yaml`. `api.streaming: true` is required for
-  TTFT/ITL/TPOT metrics at all; `x-slo-ttft-ms`/`x-slo-tpot-ms` headers give the
-  tool's own report a native `goodput_metrics` block alongside Akamas' own
-  `goal.constraints` enforcement.
+  (`quay.io/inference-perf/inference-perf:latest`), `data.type: shareGPT` with an
+  explicit `data.path` pointing at a locally-prepared, cleaned copy of
+  `anon8231489123/ShareGPT_Vicuna_unfiltered` (not the tool's own auto-download —
+  see "Real bugs hit and fixed" below), `load` as 6 explicit stages of increasing
+  rate (1 to 20 req/s, 60s each), not `load.sweep`'s automatic saturation-point
+  discovery — see `k8s/04-inference-perf-config.yaml`. `api.streaming: true` is
+  required for TTFT/ITL/TPOT metrics at all; `x-slo-ttft-ms`/`x-slo-tpot-ms`
+  headers give the tool's own report a native `goodput_metrics` block alongside
+  Akamas' own `goal.constraints` enforcement.
 - **Telemetry:** Prometheus (same instance/metric catalog as `0-explorative` —
   `kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090`,
   `duration: 30`, `logLevel: DETAILED`). Unaffected by the load-generator switch —
@@ -222,7 +223,7 @@ per that incident's own root cause — not relevant here.)
 
 `0-explorative`'s single fixed-rate load converges to one steady state, so a `trim`
 window (cut a fixed amount off the head/tail) had an obvious, principled cut point.
-This study's load is a **sweep/ramp** (10 stages × 60s, increasing rate) — there is no
+This study's load is a **sweep/ramp** (6 stages × 60s, increasing rate) — there is no
 single steady state to trim around, so `windowing.type: stability` is used instead:
 scan for a temporally stable interval, then, among the stable candidates, pick the one
 where a chosen metric is maximized.
@@ -282,6 +283,76 @@ study's own sweep-based load pattern (ramping from low load toward saturation) w
 produce genuinely comparable data — expect to revisit both thresholds once the
 baseline and first few sweep-driven trials report real numbers, and record whatever
 change is made here.
+
+## Real bugs hit and fixed getting this study's load test running (2026-07-16)
+
+Three independent, real bugs in `kubernetes-sigs/inference-perf` itself (not
+config mistakes on our side), found by actually running the baseline and reading
+its failures — kept here since they'd otherwise look like mysterious one-off
+fixes scattered across `k8s/`:
+
+1. **`get_chat_data()` crashes on ShareGPT data** (`api.type: chat`, our case) —
+   `"string indices must be integers, not 'str'"`. Root cause: HF `datasets`' JSON
+   loader re-serializes each conversation turn as a JSON string when loading a
+   top-level JSON array with a heterogeneous nested schema — this happens at
+   *load time*, not because of anything wrong in the source file (verified by
+   loading a freshly-written, fully-clean file and seeing the same behavior). The
+   sibling `get_completion_data()` already works around this
+   (kubernetes-sigs/inference-perf#429); `get_chat_data()` doesn't.
+   **Fix**: `k8s/08-inference-perf-patch.yaml` monkey-patches `get_chat_data` with
+   the same turn-parsing logic, loaded via a wrapper entrypoint
+   (`05-job.yaml`'s `command`) that runs before `inference-perf`'s own `main_cli()`.
+2. **OOM on the ShareGPT dataset** — once past bug #1, the job was `OOMKilled` at
+   its 8Gi limit. Root cause: a top-level JSON *array* (not JSON Lines) forces HF
+   `datasets` to parse the entire ~670MB file into memory before it can iterate at
+   all, even with `streaming=True`; with the tool's default multi-worker
+   multiprocessing, several workers did this simultaneously.
+   **Fix**: `k8s/07-sharegpt-prep-job.yaml` now writes the cleaned dataset as true
+   JSON Lines (one object per line, `.json` extension kept only because
+   `HFShareGPTDataGenerator.__init__` requires it) — confirmed this also made
+   conversation turns come back as real dicts, not strings, making fix #1 a
+   defense-in-depth rather than strictly load-bearing.
+3. **Preprocessing hangs forever after its own timeout** — `load.sweep`'s
+   automatic saturation-point discovery timed out as designed
+   (`"Loadgen timed out after 60.00s"`), but the job then hung indefinitely.
+   Root cause, confirmed directly: `run_stage()`'s post-timeout cleanup waits in a
+   loop for `active_requests_counter` to reach 0 — but vLLM's own
+   `num_requests_running`/`num_requests_waiting` were already both 0 (server had
+   nothing in flight), while the client's counter never cleared. A client-side
+   bookkeeping bug, not a model or dataset problem — ruled out by checking vLLM's
+   own metrics directly rather than assuming.
+   **Fix**: bypassed `load.sweep` entirely — `k8s/04-inference-perf-config.yaml`
+   uses explicit `stages` (rate 1→20 req/s, 60s each) instead of letting the
+   tool auto-discover the saturation point. The exact rate range is a rough guess
+   (see that file's own comment), not derived from this study's own data — flagged
+   for recalibration alongside the other placeholder values in this README.
+4. **Every chat request generated ~30 output tokens flat, regardless of stage/rate**
+   — confirmed from a real completed run's report (`Token Length Aggregates` showed
+   Output Mean/Med/P90 all ≈30 across every one of the 10 original stages, while
+   Prompt lengths were genuinely variable, 1300-1600+ tokens). Root cause: unlike
+   `get_completion_data` (which sets `CompletionAPIData.max_tokens` from the real
+   assistant turn's token count), `get_chat_data` never sets
+   `ChatCompletionAPIData.max_tokens` at all — it defaults to 0, and
+   `OpenAIModelServerClient.process_request` falls back to
+   `self.client.max_completion_tokens`, hardcoded to **30** in
+   `client/modelserver/openai_client.py`, whenever a request's own `max_tokens` is 0.
+   Every chat request was silently capped at 30 output tokens no matter how long the
+   real ShareGPT response actually was — undermining the realistic-load goal (only
+   half-realistic: variable prompts, uniform outputs).
+   **Fix**: `k8s/08-inference-perf-patch.yaml`'s patched `get_chat_data` now sets
+   `max_tokens` from the real last turn's token count (`self.tokenizer.count_tokens`),
+   mirroring `get_completion_data`'s own approach. Verified with a single-stage
+   smoke test (rate=5, 60s) before rolling into the real ramp: Output Mean/Med/P90
+   went from a flat 30/30/30 to a realistic 283.3/249.0/553.0.
+
+Also **reduced the ramp from 10 stages to 6** (2026-07-16, same rate range 1-20
+req/s, coarser step): a full 10-stage/60s run took **~43 minutes** end-to-end once
+real queueing set in near saturation (see "Windowing" above — `run_stage()` waits
+for every enqueued request to finish, not for the nominal `duration` to elapse, so
+stage time balloons well past 60s as the system saturates). Not tractable across an
+`optimize` step with up to 1000 experiments. 6 stages trades some resolution on
+exactly where the SLA breaks for a per-trial cost that's actually survivable —
+revisit alongside the rate-range recalibration once early real trials are in.
 
 ## Prerequisites still open before this study can be created
 
