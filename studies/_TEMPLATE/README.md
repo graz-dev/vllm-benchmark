@@ -29,8 +29,9 @@ another study.>
   installed when this study ran, since it can change later.
 - **Workload under test:** TODO — e.g. serving image + tag, model, or the specific
   Kubernetes resource being tuned.
-- **Cluster / hardware:** TODO — GPU type, node group, region, or a pointer to wherever
-  this is documented if shared infra.
+- **Cluster / hardware:** TODO — GPU type, node group, region. Provisioning itself is
+  atomic per study (decided 2026-07-15) — see this study's own `infra/README.md`, not a
+  shared/external cluster.
 - **Load generator:** TODO — tool + version + exact invocation (e.g. GuideLLM vX.Y with
   `--rate-type throughput`, or NVIDIA GenAI-Perf/AIPerf vX.Y). Don't assume another
   study's tool — this is chosen per study.

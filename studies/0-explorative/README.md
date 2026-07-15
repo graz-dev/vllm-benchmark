@@ -35,7 +35,11 @@ a natural next study once this one shows the throughput/latency Pareto shape).
   "Parameter constraints" below, never read live from this cluster, estimated backwards
   from an observed OOM), namespace `llm-serving` for the workload, `llm-benchmark` for
   the load generator, `monitoring` for Prometheus/DCGM.
-  Cluster provisioning itself is out of this repo's tooling scope — see `ROADMAP.md`.
+  **Cluster provisioning is part of this study, atomically** (since 2026-07-15 — see
+  `infra/README.md`): AWS EKS cluster `vllm-bench` (`eksctl`, `infra/eks/cluster.yaml`),
+  3 managed node groups (`system` m6i.xlarge, `akamas` r6i.xlarge, `llm-serving`
+  g5.2xlarge/1×A10G, AmazonLinux2023, tainted for GPU-only scheduling), region
+  `us-east-2`. Provisioned via `infra/eks/provision.sh`.
 - **Load generator:** GuideLLM (`ghcr.io/neuralmagic/guidellm:latest`), `guidellm
   benchmark --rate-type throughput --max-seconds 900 --data
   "prompt_tokens=512,output_tokens=128"` — finds maximum sustainable throughput at a
@@ -448,18 +452,55 @@ Akamas instance from that branch **before** re-creating this study, or
 
 ## How to run
 
-**1. Prerequisites (one-time, before creating anything below):**
+This study is atomic end to end — from an empty AWS account to a running Akamas
+study, nothing assumed to pre-exist on a shared cluster. See `infra/README.md` for
+the full layer breakdown; summarized here as a single ordered flow.
+
+**1. Provision the cluster** (one-time; ~15-20 min, mostly EKS control-plane creation):
+
+```bash
+cd studies/0-explorative/infra/eks
+./provision.sh   # cluster + node groups, kubeconfig, StorageClasses,
+                  # NVIDIA device plugin, namespaces, this study's PVCs
+```
+
+This creates the `vllm-bench` EKS cluster (3 node groups: `system`, `akamas`,
+`llm-serving`), applies both StorageClasses, installs the NVIDIA device plugin,
+creates the `llm-serving`/`llm-benchmark`/`monitoring` namespaces, and applies this
+study's two PVCs (`guidellm-results`, `vllm-model-cache`) — see "Assumptions to
+verify" #6 below for why PVCs are applied here rather than by a workflow task.
+
+**2. Install the monitoring stack** (manual — `provision.sh` prints the exact
+commands at the end of step 1, summarized here):
+
+```bash
+# DCGM Exporter (GPU hardware metrics)
+kubectl create configmap dcgm-custom-metrics \
+  --from-file=metrics=studies/0-explorative/k8s/monitoring/dcgm_counters.csv -n monitoring
+helm repo add gpu-helm-charts https://nvidia.github.io/dcgm-exporter/helm-charts && helm repo update
+helm upgrade --install dcgm-exporter gpu-helm-charts/dcgm-exporter \
+  --namespace monitoring -f studies/0-explorative/k8s/monitoring/dcgm-exporter-values.yaml
+
+# kube-prometheus-stack (Prometheus + Grafana) + the vLLM ServiceMonitor
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts && helm repo update
+helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+  --namespace monitoring -f studies/0-explorative/k8s/monitoring/values-kube-prometheus.yaml
+kubectl apply -f studies/0-explorative/k8s/02-service.yaml            # vLLM Service the ServiceMonitor targets
+kubectl apply -f studies/0-explorative/k8s/monitoring/servicemonitor.yaml
+```
+
+Optional: import `studies/0-explorative/k8s/monitoring/vllm-performance-dashboard.json`
+and `grafana-vllm-dashboard.json` into Grafana for manual inspection — not required
+for Akamas itself, which reads metrics straight from Prometheus.
+
+**3. Prerequisites before creating Akamas resources:**
 
 ```bash
 # confirm the vLLM pack 1.3.1 (with attention_backend + fixed block_size) is installed
 akamas list optimization-pack
-
-# apply the two PVCs by hand — not part of the workflow, see "Assumptions to verify" #6
-kubectl apply -f studies/0-explorative/k8s/00-pvc.yaml             # guidellm-results, ns llm-benchmark
-kubectl apply -f studies/0-explorative/k8s/01-pvc-model-cache.yaml # vllm-model-cache, ns llm-serving
 ```
 
-**2. Create the Akamas resources** (typed form, one command per file — safer ordering):
+**4. Create the Akamas resources** (typed form, one command per file — safer ordering):
 
 ```bash
 akamas create system                studies/0-explorative/akamas/system.yaml
@@ -480,7 +521,7 @@ Or in one shot (bulk form — every file self-describes its `kind:`):
 akamas create -f studies/0-explorative/akamas/
 ```
 
-**3. Start:**
+**5. Start:**
 
 ```bash
 akamas start study "0-Explorative"
@@ -526,10 +567,13 @@ were individually confirmed present, spelled exactly as templated, in
 since drifted — e.g. gained `--device-ids`, `--model-class-overrides` — confirming `main`
 isn't a safe stand-in for the deployed version without this kind of per-tag check).
 
-6. **Two PVCs need to be applied manually, once, before starting the study** — neither is
-   applied by `apply_config.sh` or any workflow task (deliberately: a PVC should persist
-   across the whole study, not be recreated/torn down per trial like the Deployment/Job
-   are). Run once against the target cluster before `akamas start study`:
+6. **Two PVCs must exist once, before starting the study, and are never re-applied by
+   `apply_config.sh` or any workflow task** (deliberately: a PVC should persist across
+   the whole study, not be recreated/torn down per trial like the Deployment/Job are).
+   Since 2026-07-15, `infra/eks/provision.sh` applies both automatically as its final
+   bootstrap step — no separate manual command needed on a fresh cluster. If re-running
+   against an already-provisioned cluster where these PVCs might not exist yet (e.g.
+   after a `kubectl delete` or a partial provisioning run), apply them by hand instead:
    ```bash
    kubectl apply -f studies/0-explorative/k8s/00-pvc.yaml            # guidellm-results, ns llm-benchmark
    kubectl apply -f studies/0-explorative/k8s/01-pvc-model-cache.yaml # vllm-model-cache, ns llm-serving
