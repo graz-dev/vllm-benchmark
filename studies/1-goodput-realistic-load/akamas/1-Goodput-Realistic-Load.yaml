@@ -28,9 +28,7 @@ windowing:
   # naturally lands near the highest-load stage the server sustains without degrading,
   # i.e. "toward the end of the ramp" without hardcoding that assumption.
   #
-  # width/resolution: 4 samples x 15s = 60s, matching one inference-perf sweep stage
-  # duration (k8s/04-inference-perf-config.yaml's load.sweep.stage_duration) so the
-  # window can't straddle two different load levels.
+  # width: 8 samples at native/raw resolution (no explicit `resolution` set).
   #
   # maxStdDev: 300 is a PLACEHOLDER (2026-07-15) sized off 0-explorative's own observed
   # prefill_token_throughput range (~2500-3600 tok/s) — recalibrate once this study's
@@ -38,15 +36,20 @@ windowing:
   # below. A prior study's reference config used maxStdDev: 1000000000, which at this
   # metric's scale never rejects any window as unstable — that value doesn't transfer
   # across metrics of different magnitude, so it isn't reused verbatim here.
+  #
+  # `when` nests INSIDE `stability`, not as a sibling under `windowing` — and there is
+  # no `task` key for this windowing type at all (that's trim-only). Confirmed the hard
+  # way: an earlier draft with `when`/`task` as siblings failed `akamas create study`
+  # with "$.stability.when: is missing but it is required" / "$.task",
+  # "$.when: is not defined in the schema".
   type: stability
   stability:
     metric: vLLM.prefill_token_throughput
     width: 8
     maxStdDev: 300
-  when:
-    metric: vLLM.prefill_token_throughput
-    is: max
-  task: RunTest
+    when:
+      metric: vLLM.prefill_token_throughput
+      is: max
 
 parametersSelection:
   # --- Same 16 as 0-explorative ---

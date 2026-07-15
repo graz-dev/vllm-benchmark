@@ -222,14 +222,22 @@ windowing:
   type: stability
   stability:
     metric: vLLM.prefill_token_throughput
-    resolution: "15s"
-    width: 4
+    width: 8
     maxStdDev: 300
-  when:
-    metric: vLLM.prefill_token_throughput
-    is: max
-  task: RunTest
+    when:
+      metric: vLLM.prefill_token_throughput
+      is: max
 ```
+
+`when` nests **inside** `stability`, not as a sibling under `windowing` — an early draft
+had it as a sibling (and also carried a `task: RunTest` key) and failed `akamas create
+study` outright: `$.stability.when: is missing but it is required` /
+`$.task`/`$.when: is not defined in the schema`. Confirmed against both the live docs
+and the real error: `task` is a `trim`-only key (it tells trim which workflow task's
+time range to anchor `trim[0]` on) — `stability` has no `task` key at all, since it
+scans the trial's own timeseries directly. In practice this still lands within the
+`RunTest` task's window regardless, since `vLLM.prefill_token_throughput` only has real
+values while vLLM is actually serving load, not during the deploy tasks.
 
 - **Same metric for both roles** (`prefill_token_throughput` for both the stability
   check and the `when: max` comparison) — a single-metric pattern, not the
@@ -239,9 +247,9 @@ windowing:
   stage the server sustains without degrading — i.e. "toward the end of the ramp"
   without hardcoding that assumption, and without penalizing an earlier degradation if
   one occurs.
-- **`width: 4`, `resolution: "15s"`** → a 60s stability window, matching one
-  `load.sweep` stage duration exactly (`k8s/04-inference-perf-config.yaml`), so the
-  window can't straddle two different load levels.
+- **`width: 8`** samples, native/raw resolution (no explicit `resolution` set, so
+  Akamas uses the trial's own underlying data-point granularity rather than an
+  aggregated bucket size).
 - **`maxStdDev: 300`** is a placeholder sized off `0-explorative`'s own observed
   `prefill_token_throughput` range (~2500-3600 tok/s), not derived from this study's own
   data (which doesn't exist yet). Recalibrate once the baseline and first sweep trials
