@@ -34,7 +34,11 @@ spec:
         - name: inference-perf
           image: quay.io/inference-perf/inference-perf:latest
           imagePullPolicy: Always
-          command: ["inference-perf"]
+          # NOT the bare `inference-perf` CLI entrypoint — runs a small wrapper
+          # (08-inference-perf-patch.yaml) that monkey-patches a real upstream bug
+          # in get_chat_data before calling inference-perf's own main_cli() with
+          # these same args. See that file for the full root-cause writeup.
+          command: ["python3", "/patch/patched_entrypoint.py"]
           args: ["--config_file", "/etc/config/config.yml"]
           env:
             - name: HF_TOKEN
@@ -56,11 +60,23 @@ spec:
               readOnly: true
             - name: results
               mountPath: /benchmarks
+            - name: sharegpt-dataset
+              mountPath: /data/sharegpt
+              readOnly: true   # prepared once by 07-sharegpt-prep-job.yaml; this
+                                # job only ever reads it (see 04-inference-perf-config.yaml's
+                                # data.path) — avoids re-downloading ~670MB on every
+                                # single trial, independent of the patch below
+            - name: patch
+              mountPath: /patch
+              readOnly: true
 
       volumes:
         - name: config-volume
           configMap:
             name: inference-perf-config
+        - name: patch
+          configMap:
+            name: inference-perf-patch
         - name: results
           persistentVolumeClaim:
             claimName: inference-perf-results   # NOT guidellm-results — this study
@@ -70,3 +86,6 @@ spec:
                                                  # this study's results into
                                                  # 0-explorative's old PVC instead of
                                                  # a fresh volume (see 00-pvc.yaml)
+        - name: sharegpt-dataset
+          persistentVolumeClaim:
+            claimName: sharegpt-dataset
