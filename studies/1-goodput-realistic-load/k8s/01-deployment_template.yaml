@@ -1,0 +1,146 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: llm-serving
+spec:
+  replicas: 1
+  # Recreate terminates the old pod before creating the new one.
+  # RollingUpdate (default) would deadlock here: the new pod waits for the GPU
+  # held by the old pod, which won't be killed until the new pod is ready.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
+    spec:
+      # Prevent Kubernetes from injecting service discovery env vars (e.g. VLLM_PORT=tcp://...)
+      # which conflict with vLLM's own VLLM_PORT variable and cause a crash on startup.
+      # See: https://docs.vllm.ai/en/stable/serving/env_vars.html
+      enableServiceLinks: false
+
+      # Pin to the GPU node group.
+      nodeSelector:
+        node-role: llm-serving
+
+      # Required to schedule on the tainted GPU node.
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:v0.22.0
+          command: ["vllm", "serve"]
+          args:
+            - "Qwen/Qwen2.5-7B-Instruct"
+            - "--served-model-name=qwen2.5-7b"
+            - "--port=8000"
+            - "--host=0.0.0.0"
+            - "--enable-mfu-metrics"
+
+            # --- Tuned (parametersSelection) — same 16 as 0-explorative ---
+            - "--gpu-memory-utilization=${vLLM.gpu_memory_utilization}"
+            - "--max-num-seqs=${vLLM.max_num_seqs}"
+            - "--max-num-batched-tokens=${vLLM.max_num_batched_tokens}"
+            - "--kv-cache-dtype=${vLLM.kv_cache_dtype}"
+            - "--performance-mode=${vLLM.performance_mode}"
+            - "--optimization-level=${vLLM.optimization_level}"
+            - "--block-size=${vLLM.block_size}"
+            - "--attention-backend=${vLLM.attention_backend}"
+            - "--dtype=${vLLM.dtype}"
+            - "--enforce-eager=${vLLM.enforce_eager}"
+            - "--scheduling-policy=${vLLM.scheduling_policy}"
+            - "--prefix-caching-hash-algo=${vLLM.prefix_caching_hash_algo}"
+            - "--disable-cascade-attn=${vLLM.disable_cascade_attn}"
+            - "--tokenizer-mode=${vLLM.tokenizer_mode}"
+            - "--async-scheduling=${vLLM.async_scheduling}"
+            - "--max-cudagraph-capture-size=${vLLM.max_cudagraph_capture_size}"
+
+            # --- Tuned (parametersSelection) — NEW in pack v1.5.1, genuinely explored
+            #     for the first time in this study (see README "Parameters tuned") ---
+            # apply_config.sh DROPS both of these entirely whenever spec_method
+            # renders as "none" — passing "--spec-method none"/"--spec-tokens 0"
+            # through would crash vLLM at startup (argparse rejects "none" as a
+            # choice; Pydantic rejects spec_tokens=0). Never remove these two
+            # lines without also removing/updating that drop-flag step.
+            - "--spec-method=${vLLM.spec_method}"
+            - "--spec-tokens=${vLLM.spec_tokens}"
+
+            # --- Pinned (single A10G, non-MoE model, same reasoning as
+            #     0-explorative — see that study's README "Parameters tuned") ---
+            - "--tensor-parallel-size=${vLLM.tensor_parallel_size}"
+            - "--pipeline-parallel-size=${vLLM.pipeline_parallel_size}"
+            - "--data-parallel-size=${vLLM.data_parallel_size}"
+            - "--enable-expert-parallel=${vLLM.enable_expert_parallel}"
+            - "--disable-custom-all-reduce=${vLLM.disable_custom_all_reduce}"
+            # NEW in pack v1.5.1 — pinned to 1 for the same reason as
+            # tensor_parallel_size: context parallelism requires multiple GPUs,
+            # this study has one. See knowledge/notes/2026-07-vllm-pack-v1.4.0-
+            # dcp-pcp-parameterconstraints.md for the divisibility constraint
+            # this would need if ever un-pinned on multi-GPU hardware.
+            - "--decode-context-parallel-size=${vLLM.decode_context_parallel_size}"
+            - "--prefill-context-parallel-size=${vLLM.prefill_context_parallel_size}"
+
+            # --- Pinned (real incidents on this exact vLLM/A10G combo — see
+            #     0-explorative's README "Incident: Concurrent Partial Prefill
+            #     crash" and "max_model_len" A/B test) ---
+            - "--max-num-partial-prefills=${vLLM.max_num_partial_prefills}"
+            - "--max-long-partial-prefills=${vLLM.max_long_partial_prefills}"
+            - "--long-prefill-token-threshold=${vLLM.long_prefill_token_threshold}"
+            - "--max-model-len=${vLLM.max_model_len}"
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+              cpu: "4"
+              memory: "16Gi"
+            limits:
+              nvidia.com/gpu: "1"
+              cpu: "8"
+              memory: "28Gi"
+
+          # Model loading takes 5-15 minutes on first start.
+          # startupProbe allows up to 10 minutes (60 x 10 s) before failing.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            failureThreshold: 60
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 30
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 60
+            failureThreshold: 3
+
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+            - name: model-cache
+              mountPath: /root/.cache/huggingface
+
+      volumes:
+        # vLLM uses shared memory for CUDA IPC handles between workers.
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 12Gi
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: vllm-model-cache

@@ -1,0 +1,82 @@
+# inference-perf config, mounted into the Job (05-job.yaml) via this ConfigMap.
+# Verified directly against kubernetes-sigs/inference-perf's own official examples
+# (examples/vllm/config.yml, examples/vllm/config-sweep.yml, 2026-07-15) — every field
+# below is a real, confirmed key, not guessed.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inference-perf-config
+  namespace: llm-benchmark
+data:
+  config.yml: |
+    # Real dataset (ShareGPT multi-turn conversations), not synthetic fixed
+    # prompt/output token counts — this is the whole point of this study vs.
+    # 0-explorative's GuideLLM "prompt_tokens=512,output_tokens=128" setup.
+    # No `path` needed — confirmed from the tool's own official example
+    # (examples/vllm/config-sweep.yml): inference-perf fetches ShareGPT itself
+    # when only `type: shareGPT` is given.
+    data:
+      type: shareGPT
+
+    # The "ramp": a linear sweep from a low rate up toward this server's own
+    # saturation point, in 10 discrete stages of 60s each (10 minutes total) —
+    # inference-perf's own vocabulary for this is "sweep", not "ramp" (confirmed
+    # 2026-07-15 against the tool's docs/source; there is no literal `ramp:` key).
+    # This directly serves the study's goal: sweeping from low to high load lets
+    # Akamas observe exactly where the TTFT/ITL constraints start being violated,
+    # which *is* the goodput ceiling this study is trying to maximize.
+    load:
+      type: constant
+      interval: 15
+      sweep:
+        type: linear            # geometric is also available; linear chosen for
+                                 # a smoother, more evenly-spaced ramp
+        timeout: 60
+        num_stages: 10
+        stage_duration: 60
+        saturation_percentile: 95
+
+    api:
+      type: chat                # Qwen2.5-7B-Instruct is an instruction/chat model
+      streaming: true          # REQUIRED to get TTFT/ITL/TPOT at all — without this,
+                                # inference-perf only reports full-response latency.
+      # SLO headers give inference-perf's own report a native "goodput_metrics" block
+      # (SLO-compliant throughput) alongside the summary — confirmed field names from
+      # docs/config.md, 2026-07-15. Thresholds are an interactive-chat industry-standard
+      # starting point (per this repo's own decision, since 0-explorative's own observed
+      # TTFT/ITL were measured under a saturating GuideLLM benchmark, not comparable to
+      # a chatbot SLA) — expect to recalibrate once this study's own baseline/sweep
+      # results are in. Akamas' own goal.constraints (in the study YAML) is the actual
+      # enforcement mechanism for the optimizer; these headers make inference-perf's own
+      # report independently show the same SLO story.
+      headers:
+        x-slo-ttft-ms: "1000"
+        x-slo-tpot-ms: "50"
+      slo_unit: "ms"
+
+    server:
+      type: vllm
+      model_name: qwen2.5-7b
+      base_url: http://vllm.llm-serving.svc.cluster.local:8000
+
+    # inference-perf queries the *target's* Prometheus for correlated metrics —
+    # this does not replace Akamas' own telemetry (akamas/telemetry/prometheus.yaml
+    # scrapes the same Prometheus instance directly for the goal/constraint metrics;
+    # this section is for inference-perf's own report only).
+    metrics:
+      type: prometheus
+      prometheus:
+        url: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
+        scrape_interval: 15
+
+    report:
+      request_lifecycle:
+        summary: true
+        per_stage: true
+        per_request: true
+
+    # Write reports to the mounted PVC (see 05-job.yaml) so they survive the Job's
+    # pod lifecycle — default would otherwise write inside the ephemeral container fs.
+    storage:
+      local_storage:
+        path: "/benchmarks/reports-{timestamp}"

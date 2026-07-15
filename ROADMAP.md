@@ -342,6 +342,7 @@ of this backlog that isn't one of these two goals has moved to **Section F
 | # | Study | Target component(s) | Objective (sketch) | Status |
 |---|-------|----------------------|---------------------|--------|
 | 1 | [0-explorative](studies/0-explorative/README.md) | vLLM | Maximize token throughput (no latency constraint, matching the pre-restructure S3.1 study it replaces) — the first study to establish a baseline, against the vLLM pack 1.3.1 (16 of 26 parameters tuned). **Result: +12.5% over baseline** (`FLASHINFER`+`fp8_e4m3`+`block_size=32`), with lower latency and higher success rate too — not a throughput/latency trade-off at this optimum. | DONE |
+| 1b | [1-goodput-realistic-load](studies/1-goodput-realistic-load/README.md) | vLLM | **Preliminary step before Goal A/B's H100 studies (2026-07-15)** — same A10G/model/vLLM version as `0-explorative` (deliberately unchanged, to isolate the variables below), but: switches load generator to `kubernetes-sigs/inference-perf` with real ShareGPT-dataset replay and a sweep/ramp load pattern instead of GuideLLM's synthetic fixed-shape saturating benchmark; tunes all 18 tunable pack v1.5.1 parameters including the new `spec_method`/`spec_tokens` (speculative decoding); goal is **goodput** (throughput subject to a P95 TTFT/ITL SLA) instead of throughput-only. Fully detailed in its own README (not Section D, which covers studies #2-#4 specifically). | TODO |
 | 2 | `<tbd>` | vLLM | **Goal A** — maximize throughput at fixed hardware (chatbot use case), re-baselined on H100 with a realistic dataset/load pattern and a latency SLA guardrail. **Setup detail: Section D, study #2.** | IDEA |
 | 3 | `<tbd>` | vLLM + Kubernetes (DRA, multi-GPU) | **Goal B, whole-GPU granularity** — given a target throughput, find the minimum `tensor_parallel_size` (GPU count) that satisfies it, requested dynamically via DRA. Tests H5/H6. **Setup detail: Section D, study #3.** | IDEA |
 | 4 | `<tbd>` | vLLM + GPU/Kubernetes (DRA→MIG, classic fallback) | **Goal B, sub-GPU granularity** — given a (smaller) target throughput, find the minimum MIG slice that satisfies it. Primary path via DRA; explicit classic device-plugin fallback if DRA's MIG support proves unworkable (confirmed still not officially supported upstream as of 2026-07-15). **Setup detail: Section D, study #4.** | IDEA |
@@ -349,7 +350,9 @@ of this backlog that isn't one of these two goals has moved to **Section F
 Before activating a study: run `/new-study` (reads this roadmap and `knowledge/README.md`
 for you), pick a real name, and let it scaffold `studies/<name>/` from the template.
 Once scaffolded, replace the `<tbd>` row above with the real study name and a link.
-**Recommended execution order: #2 → #3 → #4** — #2 re-establishes the H100 baseline and
+**Recommended execution order: #1b → #2 → #3 → #4** — #1b runs first, on the already-
+proven A10G hardware, to de-risk the tooling/pack changes (inference-perf, pack v1.5.1)
+before #2 also changes hardware to H100; #2 re-establishes the H100 baseline and
 validates the new load-testing tool that #3/#4 both reuse; #3 (DRA for generic
 multi-GPU, more mature per Section D's research) should be de-risked before #4 (DRA for
 MIG, explicitly less mature) so any DRA/Akamas integration problems surface on the

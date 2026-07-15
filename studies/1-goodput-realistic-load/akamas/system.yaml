@@ -1,0 +1,4 @@
+kind: system
+
+name: vLLM_Benchmark_1_Goodput_Realistic_Load
+description: Goodput study for the 1-goodput-realistic-load study (Qwen2.5-7B-Instruct on the same single A10G as 0-explorative, vLLM optimization pack 1.5.1)

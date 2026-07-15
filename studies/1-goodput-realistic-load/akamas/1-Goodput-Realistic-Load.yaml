@@ -1,0 +1,189 @@
+kind: study
+
+name: 1-Goodput-Realistic-Load
+system: vLLM_Benchmark_1_Goodput_Realistic_Load
+workflow: 1-Goodput-Realistic-Load-Workflow
+
+goal:
+  objective: maximize
+  function:
+    formula: vLLM.prefill_token_throughput + vLLM.decode_token_throughput
+  constraints:
+    absolute:
+      # Interactive-chat industry-standard starting thresholds (2026-07-15 decision) —
+      # NOT derived from 0-explorative's own observed TTFT/ITL numbers, which were
+      # measured under GuideLLM's saturating "--rate-type throughput" benchmark and are
+      # not representative of a latency-bounded chatbot SLA. Recalibrate both values
+      # once this study's own baseline + first few sweep-driven trials report real
+      # numbers under the ramp load pattern this study actually uses.
+      - name: TTFT P95 interactive-chat SLA
+        formula: vLLM.time_to_first_token_p95 <= 1000
+      - name: ITL P95 interactive-chat SLA
+        formula: vLLM.inter_token_latency_p95 <= 50
+
+windowing:
+  # stability, not trim: this study's load is a sweep/ramp, not a single steady state,
+  # so a fixed head/tail trim has no principled cut points. Instead, scan for a stable
+  # interval and pick the one where throughput is maximized — for a monotonic ramp that
+  # naturally lands near the highest-load stage the server sustains without degrading,
+  # i.e. "toward the end of the ramp" without hardcoding that assumption.
+  #
+  # width/resolution: 4 samples x 15s = 60s, matching one inference-perf sweep stage
+  # duration (k8s/04-inference-perf-config.yaml's load.sweep.stage_duration) so the
+  # window can't straddle two different load levels.
+  #
+  # maxStdDev: 300 is a PLACEHOLDER (2026-07-15) sized off 0-explorative's own observed
+  # prefill_token_throughput range (~2500-3600 tok/s) — recalibrate once this study's
+  # baseline + first sweep trials report real numbers, same as the TTFT/ITL thresholds
+  # below. A prior study's reference config used maxStdDev: 1000000000, which at this
+  # metric's scale never rejects any window as unstable — that value doesn't transfer
+  # across metrics of different magnitude, so it isn't reused verbatim here.
+  type: stability
+  stability:
+    metric: vLLM.prefill_token_throughput
+    width: 8
+    maxStdDev: 300
+  when:
+    metric: vLLM.prefill_token_throughput
+    is: max
+  task: RunTest
+
+parametersSelection:
+  # --- Same 16 as 0-explorative ---
+  - name: vLLM.gpu_memory_utilization
+    domain: [0.85, 0.95]
+  - name: vLLM.max_num_seqs
+    domain: [16, 1024]
+  - name: vLLM.max_num_batched_tokens
+    domain: [256, 8192]
+  - name: vLLM.kv_cache_dtype
+    categories: [auto, fp8, fp8_e4m3, fp8_e5m2]
+  - name: vLLM.performance_mode
+    categories: [balanced, interactivity, throughput]
+  - name: vLLM.optimization_level
+    domain: [0, 3]
+  - name: vLLM.dtype
+    categories: [auto, float16, bfloat16]
+  - name: vLLM.enforce_eager
+    categories: ["true", "false"]
+  - name: vLLM.scheduling_policy
+    categories: [fcfs, priority]
+  - name: vLLM.prefix_caching_hash_algo
+    categories: [sha256, sha256_cbor]
+  - name: vLLM.disable_cascade_attn
+    categories: ["true", "false"]
+  - name: vLLM.tokenizer_mode
+    categories: [auto, hf, slow]
+  - name: vLLM.async_scheduling
+    categories: ["true", "false"]
+  - name: vLLM.max_cudagraph_capture_size
+    domain: [1, 1024]
+  - name: vLLM.block_size
+    categories: ["16", "32", "48", "64", "80", "96", "112", "128"]
+  - name: vLLM.attention_backend
+    categories: [FLASH_ATTN, FLASHINFER, TRITON_ATTN]
+
+  # --- NEW in pack v1.5.1, genuinely explored for the first time in this study ---
+  - name: vLLM.spec_method
+    categories: [none, ngram, ngram_gpu, suffix, mtp]
+  - name: vLLM.spec_tokens
+    domain: [0, 16]
+
+parameterConstraints:
+  # --- Carried forward unchanged from 0-explorative (block_size is now ordinal, not
+  #     categorical, but the formula syntax is unaffected — confirmed 2026-07-14) ---
+  - name: FLASH_ATTN only supports auto kv_cache_dtype
+    formula: vLLM.attention_backend != "FLASH_ATTN" || vLLM.kv_cache_dtype == "auto"
+  - name: FlashInfer only supports block_size 16, 32, or 64
+    formula: vLLM.attention_backend != "FLASHINFER" || vLLM.block_size == "16" || vLLM.block_size == "32" || vLLM.block_size == "64"
+  - name: max_num_batched_tokens must be at least max_num_seqs
+    formula: vLLM.max_num_batched_tokens >= vLLM.max_num_seqs
+  - name: TRITON_ATTN does not support fp8 kv_cache_dtype on Ampere
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8"
+  - name: TRITON_ATTN does not support fp8_e4m3 kv_cache_dtype on Ampere
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e4m3"
+  - name: TRITON_ATTN does not support fp8_e5m2 kv_cache_dtype (query-quant bug)
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e5m2"
+
+  # --- NEW: speculative decoding gate + forced-sentinel dependent (pack v1.5.1) ---
+  # See knowledge/notes/2026-07-vllm-pack-v1.5.0-speculative-decoding-gate-pattern.md.
+  # Both directions needed: the first stops the optimizer wasting budget varying
+  # spec_tokens while speculation is off; the second stops it from ever pairing a real
+  # method with the 0 off-sentinel, which would crash vLLM at startup.
+  - name: speculative decoding disabled forces spec_tokens to its off sentinel
+    formula: vLLM.spec_method != "none" || vLLM.spec_tokens == 0
+  - name: speculative decoding enabled requires a real (non-sentinel) spec_tokens
+    formula: vLLM.spec_method == "none" || vLLM.spec_tokens > 0
+
+steps:
+  - name: baseline
+    type: baseline
+    numberOfTrials: 1
+    # Deliberately NOT written as doNotRenderParameters: ["vLLM.*"] +
+    # renderParameters: ["vLLM.gpu_memory_utilization"]. Asked Akamas' own live docs
+    # (2026-07-16) whether renderParameters can carve an exception out of an
+    # overlapping doNotRenderParameters wildcard on the same component prefix — answer:
+    # undocumented, no stated precedence, and the docs' own guidance is to avoid the
+    # overlap entirely rather than rely on undefined behavior. So instead of a
+    # wildcard + override, doNotRenderParameters below enumerates every vLLM.*
+    # parameter EXCEPT gpu_memory_utilization explicitly (all 29 others: the 16 other
+    # tuned params, spec_method/spec_tokens, and the 11 pinned params) — no wildcard,
+    # no overlap, nothing to be ambiguous about. gpu_memory_utilization is simply never
+    # named in this list, so it's computed normally, at the value pinned below.
+    #
+    # Every excluded parameter is left unrendered, so vLLM applies its own real
+    # defaults for all of them. This deliberately does NOT reintroduce
+    # 0-explorative's auto-selection crash risk: that crash came from auto-selection
+    # interacting with other NON-default tuned values; here every other parameter is
+    # simultaneously at vLLM's own stock default, i.e. exactly vLLM's standard,
+    # most-tested startup path.
+    #
+    # gpu_memory_utilization needs the explicit `values:` pin (not just "leave it
+    # un-excluded and let it render at its pack default") because the pack's own
+    # defaultValue for it is 0.92 (matching vLLM's real engine default), not the 0.90
+    # this study's baseline wants.
+    #
+    # The `optimize` step below sets neither field, so Akamas remains fully free to
+    # pick any parametersSelection value there — this restriction is baseline-only.
+    #
+    # The workflow's FileConfigurator task sets ignoreUnsubstitutedTokens: true so it
+    # doesn't fail on the resulting unsubstituted ${vLLM.*} tokens; apply_config.sh's
+    # Step 2 then strips those literal unsubstituted lines from the rendered file
+    # before it's applied.
+    values:
+      vLLM.gpu_memory_utilization: 0.90
+    doNotRenderParameters:
+      - vLLM.max_num_seqs
+      - vLLM.max_num_batched_tokens
+      - vLLM.max_model_len
+      - vLLM.tensor_parallel_size
+      - vLLM.kv_cache_dtype
+      - vLLM.max_num_partial_prefills
+      - vLLM.max_long_partial_prefills
+      - vLLM.long_prefill_token_threshold
+      - vLLM.performance_mode
+      - vLLM.optimization_level
+      - vLLM.compilation_mode
+      - vLLM.pipeline_parallel_size
+      - vLLM.data_parallel_size
+      - vLLM.enable_expert_parallel
+      - vLLM.block_size
+      - vLLM.attention_backend
+      - vLLM.dtype
+      - vLLM.enforce_eager
+      - vLLM.scheduling_policy
+      - vLLM.prefix_caching_hash_algo
+      - vLLM.disable_cascade_attn
+      - vLLM.tokenizer_mode
+      - vLLM.async_scheduling
+      - vLLM.disable_custom_all_reduce
+      - vLLM.max_cudagraph_capture_size
+      - vLLM.decode_context_parallel_size
+      - vLLM.prefill_context_parallel_size
+      - vLLM.spec_method
+      - vLLM.spec_tokens
+
+  - name: optimize
+    type: optimize
+    numberOfExperiments: 1000
+    maxFailedExperiments: 200

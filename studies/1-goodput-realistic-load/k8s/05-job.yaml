@@ -1,0 +1,72 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: inference-perf-benchmark
+  namespace: llm-benchmark
+spec:
+  # Do not retry on failure — a failed benchmark should be inspected, not silently retried.
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+
+      # Run on the CPU node; the GPU node is tainted exclusively for vLLM.
+      nodeSelector:
+        node-role: system
+
+      initContainers:
+        # Poll vLLM's /health endpoint until the model is fully loaded.
+        - name: wait-for-vllm
+          image: alpine:3
+          command:
+            - sh
+            - -c
+            - |
+              until wget -qO- http://vllm.llm-serving.svc.cluster.local:8000/health >/dev/null 2>&1; do
+                echo "$(date -u +%T) waiting for vLLM readiness..."
+                sleep 10
+              done
+              echo "vLLM is ready."
+
+      containers:
+        # Real image + command confirmed against kubernetes-sigs/inference-perf's own
+        # deploy/manifests.yaml (2026-07-15) — quay.io/inference-perf, not guessed.
+        - name: inference-perf
+          image: quay.io/inference-perf/inference-perf:latest
+          imagePullPolicy: Always
+          command: ["inference-perf"]
+          args: ["--config_file", "/etc/config/config.yml"]
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+                  optional: true   # only needed for gated models, see 03-hf-secret.yaml
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/config
+              readOnly: true
+            - name: results
+              mountPath: /benchmarks
+
+      volumes:
+        - name: config-volume
+          configMap:
+            name: inference-perf-config
+        - name: results
+          persistentVolumeClaim:
+            claimName: inference-perf-results   # NOT guidellm-results — this study
+                                                 # reuses 0-explorative's cluster/
+                                                 # namespace, and that name already
+                                                 # exists there; reusing it would mix
+                                                 # this study's results into
+                                                 # 0-explorative's old PVC instead of
+                                                 # a fresh volume (see 00-pvc.yaml)

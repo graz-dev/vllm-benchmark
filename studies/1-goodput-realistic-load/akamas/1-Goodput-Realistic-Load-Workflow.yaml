@@ -1,0 +1,48 @@
+kind: workflow
+
+name: 1-Goodput-Realistic-Load-Workflow
+tasks:
+  - name: Write config
+    operator: FileConfigurator
+    arguments:
+      # ignoreUnsubstitutedTokens: true is REQUIRED for the baseline step's
+      # doNotRenderParameters (see akamas/1-Goodput-Realistic-Load.yaml) to work at
+      # all — confirmed 2026-07-15 against Akamas' own live docs
+      # (docs.akamas.io/akamas-docs/reference/workflow-operators/fileconfigurator-operator.md):
+      # a parameter excluded via doNotRenderParameters has no computed value, so its
+      # ${vLLM.*} token is left unsubstituted in the rendered file. Without this flag,
+      # FileConfigurator would FAIL on every baseline trial. apply_config.sh's Step 2
+      # then strips those unsubstituted lines entirely before the file is applied.
+      ignoreUnsubstitutedTokens: true
+      source:
+        hostname: toolbox
+        username: akamas
+        key: /work/vllm-benchmark/studies/1-goodput-realistic-load/akamas/id_rsa
+        path: /work/vllm-benchmark/studies/1-goodput-realistic-load/k8s/01-deployment_template.yaml
+      target:
+        hostname: toolbox
+        username: akamas
+        key:  /work/vllm-benchmark/studies/1-goodput-realistic-load/akamas/id_rsa
+        path: /work/vllm-benchmark/studies/1-goodput-realistic-load/k8s/01-deployment.yaml
+
+  - name: Apply config
+    operator: Executor
+    arguments:
+      retries: 0
+      timeout: 60m
+      host:
+        hostname: toolbox
+        username: akamas
+        key:  /work/vllm-benchmark/studies/1-goodput-realistic-load/akamas/id_rsa
+      command: bash /work/vllm-benchmark/studies/1-goodput-realistic-load/k8s/apply_config.sh
+
+  - name: RunTest
+    operator: Executor
+    arguments:
+      retries: 0
+      timeout: 120m
+      host:
+        hostname: toolbox
+        username: akamas
+        key:  /work/vllm-benchmark/studies/1-goodput-realistic-load/akamas/id_rsa
+      command: bash /work/vllm-benchmark/studies/1-goodput-realistic-load/k8s/run_test_goodput.sh
