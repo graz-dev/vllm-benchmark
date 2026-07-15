@@ -1,8 +1,0 @@
-kind: workflow
-
-name: W0-Sleep
-tasks:
-  - name: Sleep
-    operator: Sleep
-    arguments:
-        seconds: 60
