@@ -267,21 +267,19 @@ change is made here.
 
 ## Prerequisites still open before this study can be created
 
-1. **Confirm the installed vLLM pack actually reports `1.5.1`** — see "Stack &
-   versions" above and `ROADMAP.md`'s URGENT debt item.
-2. **`akamas/id_rsa` does not exist in this study's folder** (deliberately not
-   copied/committed — per `.claude/rules/akamas-yaml.md`, a real SSH private key
-   should not be added to a new file without being asked; `0-explorative`'s own
-   committed key is a known, already-flagged exception, not a precedent to repeat
-   silently). Provision a real key at
-   `studies/1-goodput-realistic-load/akamas/id_rsa` (or point the workflow at
-   wherever the toolbox host's key actually lives) before running `akamas start
-   study` — confirm with the user which approach they want (reuse the same toolbox
-   host/key as `0-explorative`, or a separate one) before deciding.
+1. ~~Confirm the installed vLLM pack actually reports `1.5.1`~~ — done, pack
+   re-installed/updated on the live Akamas instance (2026-07-16).
+2. ~~`akamas/id_rsa` does not exist in this study's folder~~ — a key now exists locally
+   at `studies/1-goodput-realistic-load/akamas/id_rsa`. **Not committed to git**
+   (`.gitignore`'s `id_rsa`/`id_rsa.*` rules were found disabled and have been
+   re-enabled, 2026-07-16) — confirm separately that this same file is reachable at
+   `/work/vllm-benchmark/studies/1-goodput-realistic-load/akamas/id_rsa` on the actual
+   `toolbox` host the workflow's tasks run against, since that path is what the
+   workflow YAML references, not this git checkout.
 3. **Verify `inference-perf`'s exact behavior end-to-end at least once manually**
    before trusting it inside an Akamas experiment loop — this tool has not been used
    in this repo before (per `ROADMAP.md` Q2's now-resolved recommendation to commit
-   to it directly rather than run a side-by-side validation study first).
+   to it directly rather than run a side-by-side validation study first). Still open.
 
 ## How to run
 
