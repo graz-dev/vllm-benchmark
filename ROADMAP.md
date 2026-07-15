@@ -7,7 +7,13 @@ study's own `studies/<name>/README.md`, not here (see `README.md` on why studies
 self-contained). Update this file:
 - whenever a cross-study hypothesis is born, confirmed, or retired (section A);
 - whenever a study is decided, started, or completed (section B);
-- at the end of a study, via the `study-recap` skill (section C).
+- at the end of a study, via the `study-recap` skill (section C);
+- when a backlog study's real-world setup (GPU/instance, load generator, dataset) is
+  decided or changes (section D);
+- whenever a pack gap, tooling evaluation, or other non-study action is identified or
+  resolved (section E);
+- when a study idea is deprioritized (not abandoned) in favor of a sharper near-term
+  plan, or picked back up from that list (section F).
 
 ---
 
@@ -77,8 +83,16 @@ self-contained). Update this file:
   a throughput-side saturation for this stack.
 
 - **H4 — co-tuning Kubernetes resource limits alongside vLLM parameters changes the
-  optimum** [TO BE CONFIRMED] Akamas can tune Kubernetes-level parameters (container
-  CPU/memory requests/limits, HPA settings, ...) in the same study as vLLM parameters.
+  optimum** [TO BE CONFIRMED] **Numbering note (2026-07-15)**: every "backlog #4" cross-
+  reference below this hypothesis (and in Q6 and the autoscaling operating-practice
+  note) predates Section D's 2026-07-15 rewrite around Goal A/B — backlog #4 now names
+  the **MIG right-sizing** study (Section D, study #4), a related but distinct question
+  from what H4 describes here. The generic "replica-count/HPA/autoscaling co-tuning"
+  question H4 itself is about now lives in **Section F's "Kubernetes resource
+  co-tuning"** futuribile item, not an active backlog slot — read every "see backlog #4"
+  below as pointing there, not at the current study #4. Akamas can tune Kubernetes-level
+  parameters (container CPU/memory requests/limits, HPA settings, ...) in the same
+  study as vLLM parameters.
   Whether jointly optimizing both finds a materially better configuration than tuning
   vLLM alone (with "reasonable" fixed k8s resources) is untested — worth a dedicated
   study once a vLLM-only baseline exists to compare against. A specific mechanism worth
@@ -189,7 +203,30 @@ self-contained). Update this file:
   rate-type/concurrency mode, and note that fixed-concurrency (AIPerf-style) runs can
   look artificially stable under saturation compared to true open-loop (GuideLLM
   `constant`/`poisson`, or `benchmark_serving.py`'s Poisson/gamma) runs at "the same"
-  load.
+  load. **A third candidate evaluated 2026-07-14: `kubernetes-sigs/inference-perf`**
+  (https://github.com/kubernetes-sigs/inference-perf, wg-serving-affiliated, active —
+  weekly-ish releases, v0.6.0 as of 2026-06). Unlike GuideLLM (open-loop only,
+  synthetic fixed-shape prompts only) and AIPerf (closed-loop only), it supports
+  **both** open-loop and closed-loop load, **plus real dataset/trace replay**: ShareGPT,
+  CNN/DailyMail, BillSum, Infinity Instruct, VisionArena, Azure production-trace replay,
+  full OpenTelemetry trace/DAG replay, and an explicit `shared_prefix` generator for
+  prefix-cache-hit-rate testing. This directly closes the gap this repo's studies have
+  had so far — every study to date (`0-explorative` included) used GuideLLM's synthetic
+  fixed-shape prompts (`prompt_tokens=512,output_tokens=128`), which cannot produce
+  realistic prefix-cache reuse or content-dependent behavior. It also reports a
+  **Goodput** (SLO-constrained throughput) metric neither GuideLLM nor AIPerf has. It
+  deploys the same way GuideLLM does today (a plain Kubernetes Job + ConfigMap, no
+  Gateway API Inference Extension integration despite the `kubernetes-sigs` name) — a
+  drop-in swap for the existing workflow task, not a re-architecture. One doc
+  inconsistency flagged, not yet resolved: its own `docs/config.md` says `server.type`
+  is "currently only vLLM supported" while the README claims broader OpenAI-compatible
+  support — confirm directly against the CLI before relying on non-vLLM claims (not a
+  concern for this repo, which only ever targets vLLM). **Decision (2026-07-15):
+  committed directly to `inference-perf` with ShareGPT replay repo-wide**, superseding
+  the earlier plan to first run a dedicated side-by-side validation study against
+  GuideLLM — see Section D's intro for the current studies (#2-#4), all of which use
+  `inference-perf` from the start. Full findings in
+  `knowledge/notes/2026-07-kubernetes-sigs-inference-perf.md`.
 - **Q3 — Optimization pack versions**: pack lifecycle (which parameters/metrics exist)
   is managed outside this repo. When a study starts, record in its README exactly which
   pack versions were installed at the time — packs can change independently of this repo.
@@ -292,16 +329,31 @@ self-contained). Update this file:
 
 ## B. Prioritized study backlog
 
+**Reframed 2026-07-15 around two explicit validation goals** (see Section D for full
+detail): **(Goal A)** extract more throughput at parity of hardware; **(Goal B)** given
+a target throughput, use the right amount of hardware (right-sizing, whole-GPU via
+tensor parallelism and sub-GPU via MIG). Studies #2-#4 below are the near-term,
+concretely-scoped plan for these two goals, framed around a **chatbot** use case (the
+simplest real use case to start with, per this repo's own decision — RAG/agent use
+cases are deliberately deferred, see Section F). Everything from the previous version
+of this backlog that isn't one of these two goals has moved to **Section F
+("Futuribile")** rather than being deleted — it's deprioritized, not abandoned.
+
 | # | Study | Target component(s) | Objective (sketch) | Status |
 |---|-------|----------------------|---------------------|--------|
 | 1 | [0-explorative](studies/0-explorative/README.md) | vLLM | Maximize token throughput (no latency constraint, matching the pre-restructure S3.1 study it replaces) — the first study to establish a baseline, against the vLLM pack 1.3.1 (16 of 26 parameters tuned). **Result: +12.5% over baseline** (`FLASHINFER`+`fp8_e4m3`+`block_size=32`), with lower latency and higher success rate too — not a throughput/latency trade-off at this optimum. | DONE |
-| 2 | `<tbd>` | vLLM + Kubernetes | Tests H4: co-tune vLLM parameters with container CPU/memory requests-limits, compare best-found config against study #1's vLLM-only result | IDEA |
-| 3 | `<tbd>` | GPU / vLLM | Energy efficiency: maximize tokens/s per watt (formula using a GPU power-draw metric). Candidate first experiment/prior, per `knowledge/notes/2026-07-ai-systems-performance-serving-tuning-checklist.md`: "for some models, going from a 100% to 80% power limit yields nearly the same speed at 20% less power usage" — worth testing power-capping as a near-free win before assuming max power limit is optimal. Note the installed GPU pack is currently metrics-only (no tunable parameters, per this repo's own tracking at the time) — confirm with `akamas describe optimization-pack GPU` whether a power-limit parameter exists before scoping `parametersSelection`; if not, power capping may need to happen outside Akamas (e.g. a workflow task) | IDEA |
-| 4 | `<tbd>` | vLLM + Kubernetes (replicas/HPA) | Tests H4's replication mechanism: under-allocate `gpu_memory_utilization`/`max_num_seqs` below the single-replica optimum, run N replicas per GPU, maximize aggregate throughput vs study #1's single-replica best (see `knowledge/notes/2026-07-gpu-memory-bound-large-batch-inference.md`) | IDEA |
+| 2 | `<tbd>` | vLLM | **Goal A** — maximize throughput at fixed hardware (chatbot use case), re-baselined on H100 with a realistic dataset/load pattern and a latency SLA guardrail. **Setup detail: Section D, study #2.** | IDEA |
+| 3 | `<tbd>` | vLLM + Kubernetes (DRA, multi-GPU) | **Goal B, whole-GPU granularity** — given a target throughput, find the minimum `tensor_parallel_size` (GPU count) that satisfies it, requested dynamically via DRA. Tests H5/H6. **Setup detail: Section D, study #3.** | IDEA |
+| 4 | `<tbd>` | vLLM + GPU/Kubernetes (DRA→MIG, classic fallback) | **Goal B, sub-GPU granularity** — given a (smaller) target throughput, find the minimum MIG slice that satisfies it. Primary path via DRA; explicit classic device-plugin fallback if DRA's MIG support proves unworkable (confirmed still not officially supported upstream as of 2026-07-15). **Setup detail: Section D, study #4.** | IDEA |
 
 Before activating a study: run `/new-study` (reads this roadmap and `knowledge/README.md`
 for you), pick a real name, and let it scaffold `studies/<name>/` from the template.
 Once scaffolded, replace the `<tbd>` row above with the real study name and a link.
+**Recommended execution order: #2 → #3 → #4** — #2 re-establishes the H100 baseline and
+validates the new load-testing tool that #3/#4 both reuse; #3 (DRA for generic
+multi-GPU, more mature per Section D's research) should be de-risked before #4 (DRA for
+MIG, explicitly less mature) so any DRA/Akamas integration problems surface on the
+easier case first.
 
 ## C. Consolidated learnings
 
@@ -325,7 +377,213 @@ Once scaffolded, replace the `<tbd>` row above with the real study name and a li
   specific failure mode too, not just the KV-cache-deficit OOM the domain narrowing
   targets.
 
-### Debt / non-study actions
+## D. Incremental Study Plan — Setup Detail (Infra / Study / Load config)
+
+**Rewritten 2026-07-15** around two explicit validation goals, replacing the previous
+8-study incremental plan (moved to **Section F, "Futuribile"** rather than deleted).
+
+> **Goal A**: extract more throughput at parity of hardware.
+> **Goal B**: given a target throughput, use the right amount of hardware —
+> right-sized at whole-GPU granularity (tensor parallelism) and sub-GPU granularity
+> (MIG).
+
+**Use case: chatbot** (this repo's own explicit choice, 2026-07-15 — the simplest real
+use case to start with; RAG/agent use cases are deliberately deferred to Section F).
+This choice concretely determines the dataset and load pattern used below:
+
+- **Dataset**: ShareGPT (real multi-turn chat conversations) via `inference-perf`'s
+  `data.type: shareGPT` — this *is* chatbot traffic, not a proxy for it, and gives
+  realistic prompt/response length distributions and genuine prefix-cache reuse across
+  conversation turns, unlike `0-explorative`'s synthetic fixed-shape prompts.
+- **Load pattern differs by goal**: Goal A (study #2) wants the *ceiling* — push load
+  via a saturation sweep to find maximum sustainable throughput. Goal B (studies #3/#4)
+  wants a *fixed target* — hold load at a specific rate representing an assumed peak
+  chatbot traffic level, then let Akamas search for the minimum hardware that satisfies
+  it. Don't reuse one load config for both goals; they're asking different questions.
+- **SLA-awareness throughout**: a chatbot is an interactive, human-facing product —
+  every study below includes a latency guardrail (P95 TTFT/ITL via
+  `goal.constraints`), not just a throughput number. Maximizing throughput at the cost
+  of unacceptable per-response latency isn't a real win for this use case.
+
+**Load-generator decision (2026-07-15, supersedes the earlier "validate first" plan):
+`kubernetes-sigs/inference-perf`**, committed directly rather than run as a side-by-side
+validation study first (the earlier plan's study #6 is dropped, not deferred — the
+decision is made). Rationale unchanged from
+`knowledge/notes/2026-07-kubernetes-sigs-inference-perf.md`: it's the only one of
+GuideLLM/AIPerf/inference-perf with native real-dataset replay (ShareGPT) *and* both
+open- and closed-loop load, plus a saturation-sweep mode Goal A needs directly.
+
+**Hardware: NVIDIA H100 via AWS `p5.48xlarge`** (8× H100 80 GB, NVLink 4.0 — unchanged
+from the previous plan; verify current pricing/availability at study-design time).
+Study #2 uses 1 of its 8 GPUs classically (`nodeSelector`/resource request, no DRA
+needed — it's a single fixed GPU, not multi-GPU or MIG). Studies #3/#4 use **DRA**
+(Dynamic Resource Allocation) for dynamic device requests, per this repo's own decision
+— see the prerequisites below before either can actually run.
+
+**Hardware-baseline caveat (unchanged)**: every number `0-explorative` produced (A10G,
+Ampere) is **not** directly comparable to any study below (H100, Hopper) — different
+compute capability, different FP8 Tensor Core support (H100 has native FP8 Tensor
+Cores; `0-explorative`'s `TRITON_ATTN`+fp8 Triton-compilation incident was
+Ampere-specific and should not recur on H100 — re-verify empirically, don't just
+assume). Treat study #2's own `baseline` experiment as the new hardware reference
+point for every study after it.
+
+### DRA prerequisites and risk — read before scoping studies #3/#4
+
+Researched directly 2026-07-15 (not carried over from the earlier, less precise
+"technical preview" note):
+
+- **Core DRA API** (`resource.k8s.io`: `ResourceClaim`, `ResourceClaimTemplate`,
+  `DeviceClass`) is genuinely GA since Kubernetes 1.34. **EKS supports DRA from 1.33**,
+  **recommended 1.34+** (AWS's own docs cite an upstream bug, k8s issue #133920, fixed
+  at 1.34). **Not compatible with Karpenter or EKS Auto Mode** — the node group running
+  these studies must be a managed or self-managed node group. The NVIDIA DRA driver
+  **does not support Bottlerocket** — use an AL2023-based AMI. DRA drivers and device
+  plugins must not run on the same node for the same device type — don't leave the
+  classic NVIDIA device plugin active on this node once DRA is installed.
+- **NVIDIA's DRA driver** (now `kubernetes-sigs/dra-driver-nvidia-gpu`, donated to
+  CNCF/kubernetes-sigs; latest release `v0.4.1`, requires Kubernetes 1.32+): generic
+  multi-GPU allocation (requesting N devices from a `DeviceClass`) uses the current
+  GA `v1` API and is the more solid path — **this is what study #3 relies on**.
+  **GPU-allocation features specifically (which is where MIG-profile selection
+  lives) are explicitly stated by the driver's own README as "not yet officially
+  supported," and the GPU kubelet plugin ships disabled by default.** The only
+  existing MIG example in the driver's repo uses the old alpha API
+  (`resource.k8s.io/v1alpha2`, `MigDeviceClaimParameters`), not the current GA `v1`
+  API — there is no working GA-API MIG example today. Only `ComputeDomain` (aimed at
+  GB200-class multi-node NVLink) is called "officially supported," which doesn't apply
+  to single-node H100 work here.
+- **Akamas + DRA integration is a genuine open question** — no public evidence either
+  way that Akamas can template `ResourceClaim`/`ResourceClaimTemplate` as a component
+  parameter (as opposed to classic `resources.requests`/`resources.limits`). **Confirm
+  this with Akamas support before scoping either study #3 or #4** — if unsupported
+  natively, a workflow-level pre-render step (rendering the `ResourceClaimTemplate`
+  YAML from the tuned parameter's value before `kubectl apply`, the same pattern
+  `0-explorative`'s `apply_config.sh` already uses for other templating) is the likely
+  workaround, but this needs confirming, not assuming.
+- **Decision (2026-07-15, per this repo's own explicit choice)**: proceed with DRA for
+  both studies #3 and #4, **with an explicit documented fallback for study #4 only**
+  (classic NVIDIA device plugin + static MIG resource names, e.g.
+  `nvidia.com/mig-3g.40gb`, which is production-proven) if DRA-based MIG allocation
+  proves unworkable — so Goal B's sub-GPU right-sizing question isn't blocked by the
+  driver's own stated immaturity for that specific feature. Study #3 (generic
+  multi-GPU) doesn't need this fallback — its DRA path is the more mature one.
+
+---
+
+### Study #2 — Maximize Throughput at Fixed Hardware (Goal A, chatbot)
+
+Re-baselines `0-explorative` on H100 with a realistic dataset/load pattern and an
+explicit latency guardrail — this repo's first study under the new validation framing.
+
+- **Infra config**: `p5.48xlarge`, 1 of its 8 H100s, classic `nodeSelector`/resource
+  request (no DRA — single fixed GPU). Same `llm-serving`/`llm-benchmark`/`monitoring`
+  namespace pattern and PVC-based model cache as `0-explorative` (verify PVC/storage
+  class details against the new node rather than assuming identical). Qwen2.5-7B-
+  Instruct, same as `0-explorative`.
+- **Study config**: adapt `0-explorative`'s 16-parameter `parametersSelection` and
+  `parameterConstraints` to H100 — **re-verify each constraint against vLLM source for
+  Hopper specifically**, don't assume they transfer as-is (the `TRITON_ATTN`+fp8
+  Triton-compilation exclusion was Ampere-specific; H100 supports `fp8e4nv` natively,
+  so that exclusion may no longer be needed — confirm empirically, don't remove it on
+  the strength of this note alone). **Add the two now-available pack parameters**:
+  `vLLM.spec_method`/`vLLM.spec_tokens` (categorical gate `none`/`ngram`/`ngram_gpu`/
+  `suffix`/`mtp`, default `none`, plus the integer dependent) — copy in both
+  `parameterConstraints` from
+  `knowledge/notes/2026-07-vllm-pack-v1.5.0-speculative-decoding-gate-pattern.md`, and
+  implement the deploy-script drop-flag step it documents (dropping `--spec-method`/
+  `--spec-tokens` from the rendered command whenever the gate is `"none"` — passing
+  the sentinels through would crash vLLM at startup). N-gram speculation is a plausible
+  (if modest — chatbot conversation isn't as repetitive as code/RAG) throughput lever
+  now worth letting the optimizer try, given `"none"` is still the safe default if it
+  doesn't help. **Goal**: maximize `vLLM.prefill_token_throughput +
+  vLLM.decode_token_throughput`, subject to a `goal.constraints` latency SLA (e.g.
+  `vLLM.time_to_first_token_p95 <= <X ms>` and/or an ITL bound) — `X` chosen empirically
+  from this study's own baseline experiment, not invented or carried over from
+  `0-explorative`'s A10G-era numbers. Consider narrowing `gpu_memory_utilization`
+  further per H2's weak-correlation finding to spend more optimizer budget on
+  parameters that actually move the throughput/latency trade-off.
+- **Load config**: `inference-perf`, `data.type: shareGPT`, **saturation-sweep mode**
+  (linear/geometric rate progression until the server saturates) to find the ceiling
+  throughput under realistic chatbot content — this is Goal A's defining load pattern,
+  distinct from studies #3/#4's fixed-target load below.
+
+### Study #3 — Multi-GPU Right-Sizing via Tensor Parallelism (Goal B, whole-GPU granularity, tests H5/H6)
+
+Given a target throughput (a larger chatbot deployment's expected peak), find the
+minimum GPU count that satisfies it — the inverse question from study #2's "maximize
+given fixed hardware."
+
+- **Infra config**: `p5.48xlarge`, via **DRA**: a `ResourceClaimTemplate` requesting
+  `count: N` devices from a GPU `DeviceClass` (`resource.k8s.io/v1`, the current GA
+  API — the more mature DRA path per the research above), where `N` is driven by
+  `vLLM.tensor_parallel_size`'s tuned value. **Prerequisites to confirm before this
+  study can run** (see the DRA section above): an EKS managed/self-managed node group
+  (not Karpenter/Auto Mode) on Kubernetes 1.34+, AL2023 AMI, NVIDIA DRA driver v0.4.1+
+  installed via Helm with GPU allocation enabled (disabled by default), and confirmed
+  with Akamas support whether `ResourceClaimTemplate` can be templated as a component
+  parameter or needs a workflow pre-render step. Confirm the Kubernetes Topology
+  Manager policy and that the requested GPUs are NUMA-local to the pod's pinned CPUs
+  (per H5's provisioning-prerequisite note) — real NVLink 4.0 between all 8 H100s on
+  this instance, unlike the A10G `g5` family which had none.
+- **Study config**: `vLLM.tensor_parallel_size` ∈ `{1, 2, 4, 8}` (not the pack's full
+  `[1,16]` range — per H5's "minimum that fits" framing and this instance's 8-GPU cap),
+  `pipeline_parallel_size`/`data_parallel_size` pinned to 1 (single node, isolates TP),
+  carrying forward `attention_backend`/`kv_cache_dtype`/`block_size`/`spec_method`/
+  `spec_tokens` from study #2's winning region rather than re-searching them. **Goal
+  (inverted from study #2)**: minimize `vLLM.tensor_parallel_size` (the GPU-count
+  proxy) subject to `goal.constraints` requiring the throughput formula to meet or
+  exceed a target `Y` tokens/s representing the assumed peak chatbot traffic tier for
+  this study (choose `Y` deliberately higher than study #2's single-GPU ceiling, so
+  the study can actually demonstrate needing more than one GPU) — this is the concrete
+  Akamas expression of Goal B. Cross-check the result against H5's "~3.5× for 4 GPUs"
+  reference figure and the 50-70%-communication-overhead warning for poorly-partitioned
+  interconnect (not expected to bite here, given real NVLink 4.0, but verify — a
+  measured efficiency well below that figure is a stronger signal of a real issue than
+  it would have been on the earlier PCIe-only A10G plan).
+- **Load config**: `inference-perf`, `data.type: shareGPT`, but **fixed at the target
+  rate `Y`** (open-loop `poisson`, not a sweep) — the question here is "what hardware
+  satisfies this specific load," not "what's the ceiling."
+
+### Study #4 — MIG Right-Sizing (Goal B, sub-GPU granularity)
+
+Given a *smaller* target throughput (a lower-traffic chatbot deployment), find the
+minimum MIG slice that satisfies it — the sub-GPU-granularity complement to study #3.
+
+- **Infra config**: `p5.48xlarge`, 1 of its 8 H100s MIG-partitioned. **Primary path:
+  DRA**, per this repo's own decision — but per the DRA-risk section above, expect to
+  need the driver's older alpha API (`resource.k8s.io/v1alpha2`,
+  `MigDeviceClaimParameters`) since no working GA-API MIG example exists yet, and
+  expect the GPU kubelet plugin to need explicit enabling (disabled by default,
+  "not yet officially supported" per the driver's own README). **Explicit fallback**:
+  if DRA-based MIG allocation proves unworkable within reasonable effort, switch to
+  the classic NVIDIA device plugin + static MIG resource names (`nvidia.com/mig-
+  <profile>`, e.g. `nvidia.com/mig-3g.40gb`) — production-proven, just not DRA-based —
+  and note the fallback explicitly in this study's own README rather than silently
+  abandoning the DRA attempt without a record.
+- **Study config**: a new categorical/ordinal parameter representing MIG slice size
+  (smallest→largest, e.g. `1g.10gb` < `2g.20gb` < `3g.40gb` < `4g.40gb` < `7g.80gb` on
+  an H100 80GB — confirm exact available profiles at study-design time) — **this
+  parameter doesn't exist in any installed pack yet and needs new pack-engineering
+  work** (most naturally a new Kubernetes-pack parameter or a new component type
+  representing "which GPU resource to request," analogous to the already-flagged
+  GPU-fraction-per-replica gap in H4/backlog, not something vLLM itself controls). Use
+  `ordinal`, not `categorical`, for this parameter from the start — the pack audit
+  already established Akamas' `ordinal` type exists specifically for this shape of
+  ordered-value problem (see the `block_size` conversion). Carry forward vLLM software
+  parameters from study #2's winning region, rescaled where needed to the smaller
+  slice's actual VRAM (`max_num_seqs`/`max_num_batched_tokens` in particular — a MIG
+  slice's memory is fixed and smaller than a full GPU's). **Goal (same inverted shape
+  as study #3, one granularity finer)**: minimize the MIG-slice-size parameter subject
+  to `goal.constraints` requiring the throughput formula to meet or exceed a target
+  `Z` tokens/s representing a smaller chatbot traffic tier (`Z` deliberately lower than
+  study #3's `Y`, so the narrative across studies #2→#3→#4 is "single GPU → multiple
+  GPUs for large traffic → GPU fraction for small traffic," a full right-sizing
+  spectrum).
+- **Load config**: `inference-perf`, `data.type: shareGPT`, fixed at target rate `Z`
+  (same reasoning as study #3 — a specific target, not a sweep).
+
+## E. Debt / non-study actions
 - [ ] **Evaluate Run:ai Model Streamer to cut per-experiment model-load time**, per
       `knowledge/notes/2026-07-generative-ai-on-kubernetes-production-tuning-routing.md`.
       Every Akamas experiment in this repo's studies pays a 5-15 min model-load cost
@@ -358,57 +616,111 @@ Once scaffolded, replace the `<tbd>` row above with the real study name and a li
       Revoke/rotate it wherever it grants access, and treat it as compromised regardless
       of whether the file is still present on disk — removing a file from the working
       tree does not remove it from git history; that requires a history rewrite.
-- [ ] Provision (or document access to) the shared cluster/environment studies will run
-      against — currently out of this repo's tooling scope, but at least one study will
-      need somewhere real to run.
+- [x] **Cluster provisioning is now atomic per study, not shared** (resolved
+      2026-07-15, supersedes this item's original framing). `0-explorative` gained a
+      complete `infra/` layer (`eksctl` cluster config, `provision.sh`, Kubernetes
+      bootstrap namespaces/StorageClasses) ported from `_old/infra/` and organized
+      under `studies/0-explorative/infra/` — see that folder's own `README.md`.
+      `studies/_TEMPLATE/infra/` scaffolds the same shape for future studies (own
+      `CLAUDE.md` line updated to match). Studies #2-#4 in Section D each still need
+      their *own* `infra/eks/cluster.yaml` scaffolded for `p5.48xlarge`/H100 before
+      they can run — this item resolves the general pattern, not every study's
+      specific cluster yet.
 - [ ] Scaffold and run the first real study under `studies/` via `/new-study`.
-- [ ] **Pack request**: pipeline parallelism (`pipeline_parallel_size`), expert
-      parallelism (MoE expert count / EPLB toggles), decode/prefill context parallelism
-      (`--decode-context-parallel-size`, `--prefill-context-parallel-size`), and
-      prefill/decode disaggregation topology are all vLLM CLI flags discussed in
-      `knowledge/notes/2026-07-distributed-inference-scaling-dimensions.md` but not
-      present in the installed vLLM optimization pack's parameter list as of 2026-07-08
-      (per this repo's own tracking at the time). Only
-      `tensor_parallel_size` and data-parallelism-via-replicas are currently reachable.
-      Re-check with `akamas describe optimization-pack vLLM` before starting any
-      multi-node or MoE-topology study — if still missing, raise with the pack owner.
-      Also missing, per
-      `knowledge/notes/2026-07-distributed-inference-advanced-deployment-patterns.md`:
-      speculative decoding config (method + draft-model reference, e.g. vLLM's
-      `--speculative-config` — prioritize this ask if any future study is RAG-shaped or
-      has high input/output overlap: per
-      `knowledge/notes/2026-07-speculative-decoding-survey.md`, the achievable speedup
-      for such workloads (9–12× for grammar-correction-like tasks, 2–3× for RAG) is
-      categorically larger than for general chat (~1.5–2.5×)). **Sharper operational
-      nuance for this same ask**, per
-      `knowledge/notes/2026-07-inference-engineering-techniques-quantization-speculation-parallelism.md`:
-      production engines don't just see speculative decoding's benefit shrink at large
-      batch sizes, they **dynamically disable it** once compute saturates and there's no
-      longer spare capacity to afford draft-token verification — if/when this parameter
-      is added to the installed pack, confirm whether it needs to be modeled as a static
-      method/draft-model choice alone or should also expose a batch-size-conditional
-      toggle to match how production engines actually behave. KV cache dtype/quantization
-      (`--kv-cache-dtype`, FP8/FP4 —
-      the more plausible near-term ask since it's a single per-instance flag), and
-      KV-transfer connector selection / disaggregated pool topology (the latter is a
-      deployment-architecture choice, not a per-instance parameter — confirm with the
-      pack owner whether it belongs in a component's parameter list at all, or should
-      stay a fixed choice made before a study starts). Also check for a **KV-cache
-      preemption-threshold parameter**, per
-      `knowledge/notes/2026-07-distributed-inference-blueprints-troubleshooting.md` — its
-      troubleshooting playbook names preemption tuning as the fix for a TPOT-rise +
-      climbing-KV-utilization symptom, but it wasn't listed in this repo's tracked vLLM
-      parameter summary at the time; confirm with `akamas describe optimization-pack
-      vLLM`. Also check, per
-      `knowledge/notes/2026-07-auto-tune-vllm.md` (an independent OpenShift-affiliated
-      vLLM auto-tuning project's own parameter list): `swap_space` (CPU-offload swap
-      space for KV cache), `max_seq_len_to_capture` (CUDA-graph capture length), `dtype`
-      (model compute dtype), `enforce_eager` (disable CUDA graphs), `scheduling_policy`
-      (`fcfs`/`priority`), and `scheduler_delay_factor`. Separately, check whether
-      **`data_parallel_size`** exists as a vLLM-internal parameter in the installed
-      pack — if so, it may close the H4/backlog #4 Kubernetes replica-count gap from
-      *inside* the vLLM component itself, without needing Kubernetes-pack support at
-      all.
+- [x] **Pack request — implemented directly on the open branch, 2026-07-14** (pack
+      version now `1.5.1`, commits `2121136`, `ba048e4`, and `9e177fd` on
+      `feature/attention-backend-and-block-size-categorical`, not pushed/merged — see
+      the urgent branch/version item below). **Added, source-verified against vLLM
+      `v0.22.0`**: `decode_context_parallel_size` (integer `[1,16]`, default 1) and
+      `prefill_context_parallel_size` (integer `[1,8]`, default 1) — the decode/prefill
+      context parallelism gap first flagged in
+      `knowledge/notes/2026-07-distributed-inference-scaling-dimensions.md` is closed.
+      Both need the `parameterConstraints` documented in
+      `knowledge/notes/2026-07-vllm-pack-v1.4.0-dcp-pcp-parameterconstraints.md` (also
+      now in the pack's own README) copied into any study that tunes them — in
+      particular `decode_context_parallel_size` must evenly divide
+      `tensor_parallel_size`, and `decode_context_parallel_size > 1` is only safe for
+      MLA-architecture models (not Qwen2.5-7B), a model-config-dependent constraint that
+      can't be expressed as a pack-level formula. **Confirmed definitively absent from
+      vLLM `v0.22.0`** (exhaustive source grep, not a guess — no longer open questions
+      for the pack owner): `swap_space` (flag removed upstream), `scheduler_delay_factor`
+      (zero occurrences in source), `max_seq_len_to_capture` (superseded by
+      `max_cudagraph_capture_size`, already a pack parameter), and a KV-cache
+      preemption-threshold parameter (preemption is purely automatic, not
+      CLI-configurable). **Speculative decoding — also now implemented**, via a
+      reusable "gate parameter + forced-sentinel dependent" pattern: added
+      `spec_method` (categorical `none`/`ngram`/`ngram_gpu`/`suffix`/`mtp`, default
+      `none`) and `spec_tokens` (integer `[0,16]`, default 0) — named to mirror vLLM's
+      own `--spec-method`/`--spec-tokens` CLI flags directly, matching this pack's own
+      naming convention (an initial `speculative_decoding_method`/
+      `num_speculative_tokens` naming was caught and corrected the same day, commit
+      `9e177fd`, before the branch was ever pushed). Draft-model-dependent methods
+      (`eagle`/`medusa`/`mlp_speculator`/`draft_model`/etc.) were deliberately **not**
+      added — they'd need a `--spec-model` reference this pack doesn't provide
+      (workload/target-model-specific, not a fixed pack-level domain) and would crash
+      vLLM at startup without one. Full pattern, source citations, and the two
+      required `parameterConstraints` (forcing `spec_tokens=0` whenever the gate is
+      `"none"`, and forbidding `0` whenever it isn't) are in
+      `knowledge/notes/2026-07-vllm-pack-v1.5.0-speculative-decoding-gate-pattern.md`.
+      **Any study using these two parameters must also implement a deploy-script
+      drop-flag step** (documented in both that note and the pack's own README) —
+      passing the sentinel values through to vLLM (`--spec-method none` /
+      `--spec-tokens 0`) would crash it at startup, confirmed from source (argparse
+      rejects `none` as a choice; Pydantic rejects `num_speculative_tokens=0`, the
+      internal field `spec_tokens` maps to) — they must be *omitted from the rendered
+      command entirely* when the gate is `"none"`, the same shape of fix
+      `0-explorative`'s own `apply_config.sh` already applies to boolean CLI flags.
+      **Deliberately not attempted** (unchanged conclusion): MoE expert-count/EPLB
+      toggles and disaggregation/prefill-decode topology remain deployment-architecture
+      choices, not per-instance parameters.
+- [ ] **URGENT — confirm which pack version is actually installed on the Akamas
+      instance**: as of 2026-07-14 the open branch
+      `feature/attention-backend-and-block-size-categorical` is now at **`1.5.1`**
+      (block_size ordinal conversion + DCP/PCP parameters + speculative-decoding gate
+      pattern with corrected `spec_method`/`spec_tokens` naming, commits `2121136`,
+      `ba048e4`, and `9e177fd`, still unpushed/unmerged/untagged locally). Both
+      `origin/develop` and `origin/master` remain pinned at the **tagged** `1.2.0`,
+      which has the old, broken `block_size: integer [1,128]` domain (no
+      multiple-of-16 guard) — no `1.3.1`/`1.4.0`/`1.5.0`/`1.5.1` tag exists anywhere
+      in the repo. Run `akamas describe optimization-pack vLLM` before starting any new
+      study: if it reports `1.2.0` (or anything other than this feature-branch build),
+      the crash this repo already root-caused and fixed is live again for that
+      installation, and none of the new DCP/PCP/speculative-decoding parameters or the
+      ordinal `block_size` conversion are available either. Ask the pack owner
+      to merge and tag the branch (opening a PR/MR is the user's own separate decision,
+      not yet made) rather than relying on an unreleased build persisting on the Akamas
+      instance indefinitely.
+- [x] **Pack improvement — `block_size` converted from `categorical` to `ordinal`,
+      implemented 2026-07-14** (same commit `2121136` as above). Confirmed directly
+      against Akamas' own docs (`docs.akamas.io/akamas-docs/reference/glossary/
+      parameter`) that Akamas has a real, currently-shipping `ordinal` domain type
+      distinct from `categorical` — categorical values are one-hot encoded with **no
+      notion of order or adjacency** to the optimizer, while `ordinal` values are
+      converted to an ordered real value the optimizer *can* exploit. Same 8 values/
+      default as before, only the domain `type` changed. **Not yet validated against a
+      live Akamas instance** — no `akamas` CLI was available where this work was done;
+      the exact YAML syntax (`type: ordinal`, reusing `categories:`) was inferred by
+      analogy with two other real Akamas packs that use `ordinal` for the same shape of
+      problem (AWS pack's `aws_ec2_instance_size`, Node.js pack's
+      `v8_max_semi_space_size_ordinal`), not confirmed from a fetchable raw-YAML
+      example. **Run `akamas build optimization-pack`/`akamas describe optimization-pack
+      vLLM` against a real 3.7.x instance before relying on this in a live study**, per
+      `.claude/rules/akamas-yaml.md` — if rejected, the documented fallback is reverting
+      to `categorical` with categories left in ascending order (still correct, just
+      less search-efficient).
+- [ ] **Two smaller pack-audit findings, informational for future study design, not pack
+      bugs**: `prefix_caching_hash_algo`'s `xxhash`/`xxhash_cbor` categories require the
+      optional `xxhash` Python package per the pack's own description — the same *shape*
+      of risk as the original `block_size` problem (a categorical value not universally
+      valid) but gated by an environment precondition, not a domain-type fix; confirm
+      the package is installed in a study's target image before including these values,
+      or add a `parameterConstraints` exclusion the way `0-explorative` already excludes
+      them. Separately, `max_long_partial_prefills`'s own description states it "must be
+      ≤ `max_num_partial_prefills`" — an unenforced cross-parameter constraint Akamas
+      packs have no mechanism to encode themselves; any future study tuning both
+      parameters together needs its own `parameterConstraints` entry for this, the same
+      pattern `0-explorative` already used for the FlashInfer/`block_size` and
+      `FLASH_ATTN`/`kv_cache_dtype` cases.
 - [ ] **Evaluate NVIDIA Dynamo's `aiconfigurator`** for deployment-topology planning
       (aggregated vs. disaggregated, TP/PP degree, prefill/decode worker count, GPU
       count/type) ahead of any future multi-GPU or MoE study, per
@@ -418,11 +730,22 @@ Once scaffolded, replace the `<tbd>` row above with the real study name and a li
       directly. Coverage is limited to its pre-profiled model/GPU database (GPT/LLAMA/
       Qwen/Mixtral/DeepSeek-V3 on H100/H200/A100/B200/GB200) — check whether a study's
       actual model/GPU is covered before relying on it, and still validate its output
-      with real load testing (GuideLLM, per Q2) rather than trusting its simulated
-      estimate alone.
+      with real load testing (`inference-perf`, per Q2) rather than trusting its
+      simulated estimate alone.
 - [ ] **Confirm whether the target cluster has a GPU-sharing scheduler** (NVIDIA
       Run:ai, MIG, time-slicing, MPS, or a Dynamic Resource Allocation (DRA) driver)
-      before scoping backlog #4's replica-count study, per
+      before scoping backlog #4's MIG right-sizing study. **Narrowed by this repo's own
+      2026-07-14/2026-07-15 decisions**: Section D's study #4 commits to **MIG only**
+      as the partitioning mechanism (no time-slicing/MPS/Run:ai), requested via **DRA**
+      with a classic device-plugin fallback (see Section D's "DRA prerequisites and
+      risk") — so for this repo's own near-term plan, the open question is specifically
+      "does the `p5.48xlarge` node's H100s support the MIG profile sizes study #4
+      needs" (yes, H100 supports up to 7 MIG instances same as A100) and "does DRA or
+      the classic device plugin end up being the actual working path" (per the
+      fallback plan), not a broader "which of five mechanisms is available" survey.
+      The general background below stays useful if this decision is ever revisited
+      (e.g. a future study wants soft/oversubscribed sharing instead of MIG's hard
+      isolation). Per
       `knowledge/notes/2026-07-gpu-fractioning-nvidia-runai.md` and
       `knowledge/notes/2026-07-kubernetes-gpu-scheduling-patterns.md`. If one is
       available, backlog #4 should test GPU-fraction-per-replica (not just replica
@@ -454,3 +777,72 @@ Once scaffolded, replace the `<tbd>` row above with the real study name and a li
       isolation/granularity trade-off is explicitly framed as suited to *many small
       models sharing a GPU*, not this repo's single-large-model-per-GPU case — worth
       keeping in mind if backlog #4 is ever scoped around MIG specifically.
+      **Update 2026-07-15 — decision made to proceed with DRA anyway**: per a more
+      precise, direct re-check (see Section D's "DRA prerequisites and risk"), the core
+      DRA API is genuinely GA and EKS-supported since 1.33/1.34; NVIDIA's driver's
+      generic multi-GPU allocation is workable, but its MIG-specific GPU-allocation
+      feature is still explicitly "not yet officially supported" upstream (confirmed
+      directly from the driver's own README, not just inferred). This repo's own
+      decision (2026-07-15) is to use DRA for both studies #3 (multi-GPU, the more
+      mature path) and #4 (MIG, explicitly the less mature path), with a documented
+      classic-device-plugin fallback for study #4 specifically if DRA-based MIG
+      allocation proves unworkable — see Section D for the full detail. This
+      supersedes the blanket "don't treat DRA as viable yet" framing above for this
+      repo's own near-term plan, though the underlying caution (driver immaturity for
+      MIG specifically) is still accurate and the reason the fallback exists.
+
+## F. Futuribile — deprioritized, not abandoned
+
+**Added 2026-07-15**, when Section D was rewritten around the two explicit validation
+goals (Goal A: throughput at fixed hardware; Goal B: right-sized hardware for a target
+throughput). Everything below doesn't map onto either goal directly — deprioritized in
+favor of studies #2-#4, not deleted. Revisit any of these once the current plan
+completes or a concrete need arises.
+
+- **Kubernetes resource co-tuning (generic)** — co-tuning container CPU/memory
+  requests/limits alongside vLLM parameters (tests H4, the original framing before this
+  session's Goal A/B reframing). Orthogonal to both current goals; worth doing once
+  studies #2-#4 establish H100 baselines to compare against.
+- **Energy efficiency** — maximize tokens/s per watt (a GPU power-draw metric).
+  Candidate prior, per `knowledge/notes/2026-07-ai-systems-performance-serving-tuning-checklist.md`:
+  "for some models, going from a 100% to 80% power limit yields nearly the same speed
+  at 20% less power usage." Confirm via `akamas describe optimization-pack GPU`
+  whether a power-limit parameter exists; if not, power-capping needs a workflow task
+  (`nvidia-smi -pl`) rather than an Akamas parameter.
+- **MIG multi-tenant exploration** (distinct from study #4's single-model right-sizing
+  question) — 2-3 *smaller, different* models (e.g. 1-3B parameter class) sharing MIG
+  slices of one H100, aggregate multi-tenant throughput vs. a shared-full-GPU baseline.
+  MIG's actual intended use case per the knowledge base, but not this repo's current
+  single-model-per-GPU question — revisit if a genuinely multi-tenant workload need
+  arises.
+- **RAG and agent use cases** — deliberately deferred per this repo's own 2026-07-15
+  decision to start with chatbot as the simplest real use case. Each needs a distinct
+  dataset/load-pattern choice, not a reuse of the chatbot ShareGPT setup: RAG needs
+  long-context/retrieval-heavy prompts and a strong focus on prefix-cache-hit-rate (per
+  Q4's `MIN_CACHE_HIT_PCT`-style constraint idea); agent workloads need multi-step
+  tool-calling traces, most naturally captured via `inference-perf`'s OpenTelemetry
+  trace/DAG replay rather than its simpler ShareGPT/synthetic generators. Revisit once
+  the chatbot use case's three studies are done and validated.
+- **Speculative decoding as its own dedicated study** (beyond being one tunable
+  dimension folded into study #2) — n-gram-style speculation shows its largest gains
+  on high-repetition workloads (per `knowledge/notes/2026-07-speculative-decoding-survey.md`),
+  which chatbot conversation isn't especially shaped for. A RAG or code-completion use
+  case (see above) would be a much stronger test of `spec_method`/`spec_tokens`'s real
+  value than the chatbot use case alone.
+- **Hopper-specific FP8/NVFP4 deep dive** — H100's native FP8 Tensor Cores and NVFP4
+  support go beyond what study #2's general parameter search will naturally explore in
+  depth; a dedicated quantization-focused study could push further once the chatbot
+  baseline exists.
+- **llm-d adoption** — unchanged from Q6: N/A until real production-scale traffic
+  exists (100M+ tokens/day, 100B+ parameter model, per the concrete thresholds already
+  cited there). Nothing in Section D blocks adopting it later.
+- **Disaggregation topology, MoE expert-count/EPLB** — unchanged conclusion from the
+  pack-engineering decisions already made: deployment-architecture choices, not
+  per-instance parameters: not attempted in the vLLM pack, not scoped as a study here.
+- **Load-generator validation (GuideLLM vs. AIPerf vs. inference-perf)** — **resolved,
+  not deferred**: this repo committed directly to `inference-perf` (2026-07-15, see
+  Section D's intro) rather than running a dedicated validation study first. Listed
+  here only for the historical record, not as a pending item.
+- **Multi-node (beyond one 8-GPU `p5.48xlarge` node)** — not yet needed at any scale
+  studies #2-#4 test; revisit only if a target throughput in a future study genuinely
+  exceeds what 8 H100s on one node can deliver.

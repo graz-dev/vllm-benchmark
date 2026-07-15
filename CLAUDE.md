@@ -21,10 +21,11 @@ and the Claude Code tooling for configuring them and analyzing their results —
 ```
 studies/README.md  Recap index: one row per study — folder, status, how it was
                     configured, what was observed. Factual record, not a plan.
-studies/<name>/  One folder per study, fully self-contained: its own Akamas resources
-                 (system, components, telemetry, workflow, study) and its own Kubernetes
-                 manifests, results, and README.md. Duplication across studies is
-                 intentional — see studies/_TEMPLATE/ for the expected shape.
+studies/<name>/  One folder per study, fully self-contained: its own cluster
+                 provisioning (infra/), Akamas resources (system, components,
+                 telemetry, workflow, study), Kubernetes manifests (k8s/), results,
+                 and README.md. Duplication across studies is intentional — see
+                 studies/_TEMPLATE/ for the expected shape.
 knowledge/       Distilled tuning knowledge (papers, articles, docs alike), shared across
                  studies (index: knowledge/README.md).
 ROADMAP.md       Cross-study living plan: hypotheses, backlog, learnings — what to try
@@ -35,8 +36,14 @@ ROADMAP.md       Cross-study living plan: hypotheses, backlog, learnings — wha
                  plugins, not a local skill — see "Working rules" below.
 ```
 
-Cluster/environment provisioning is not currently owned by this repo's tooling; each
-study's README records what it ran against regardless of where that lives.
+**Cluster/environment provisioning is atomic per study** (decided 2026-07-15,
+superseding the earlier "not owned by this repo's tooling" stance): each study's own
+`infra/` folder (`eksctl` cluster config + provisioning script + Kubernetes bootstrap
+manifests) takes an empty AWS account to a cluster ready for that study's Akamas
+resources — see `studies/0-explorative/infra/README.md` for the reference shape, and
+`studies/_TEMPLATE/infra/` for what a new study should scaffold. Studies don't share a
+cluster config; a future study with different hardware gets its own `infra/eks/
+cluster.yaml`.
 
 ## Key commands
 
