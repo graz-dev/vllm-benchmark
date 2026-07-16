@@ -10,16 +10,17 @@ goal:
     formula: vLLM.prefill_token_throughput + vLLM.decode_token_throughput
   constraints:
     absolute:
-      # Interactive-chat industry-standard starting thresholds (2026-07-15 decision) —
-      # NOT derived from 0-explorative's own observed TTFT/ITL numbers, which were
-      # measured under GuideLLM's saturating "--rate-type throughput" benchmark and are
-      # not representative of a latency-bounded chatbot SLA. Recalibrate both values
-      # once this study's own baseline + first few sweep-driven trials report real
-      # numbers under the ramp load pattern this study actually uses.
+      # Interactive-chat industry-standard starting thresholds (2026-07-15 decision,
+      # loosened 2026-07-16 from 1000ms/50ms to 1500ms/300ms) — NOT derived from
+      # 0-explorative's own observed TTFT/ITL numbers, which were measured under
+      # GuideLLM's saturating "--rate-type throughput" benchmark and are not
+      # representative of a latency-bounded chatbot SLA. Still a placeholder:
+      # recalibrate once this study's own baseline + first few ramp-driven trials
+      # report real numbers under the recalibrated 0.2-2.5 req/s load range.
       - name: TTFT P95 interactive-chat SLA
-        formula: vLLM.time_to_first_token_p95 <= 1000
+        formula: vLLM.time_to_first_token_p95 <= 1500
       - name: ITL P95 interactive-chat SLA
-        formula: vLLM.inter_token_latency_p95 <= 50
+        formula: vLLM.inter_token_latency_p95 <= 300
 
 windowing:
   # stability, not trim: this study's load is a sweep/ramp, not a single steady state,

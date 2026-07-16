@@ -272,17 +272,21 @@ values while vLLM is actually serving load, not during the deploy tasks.
 
 ## Latency SLA thresholds — flagged as a starting point, not final
 
-`goal.constraints` uses **TTFT P95 ≤ 1000ms** and **ITL P95 ≤ 50ms** — generic
-interactive-chat industry targets (2026-07-15 decision), **not** derived from
-`0-explorative`'s own observed TTFT/ITL numbers. Those numbers (baseline ~38.9s TTFT
-P95, ~598ms ITL P95, extracted directly from `0-explorative`'s own export) were
-measured under GuideLLM's `--rate-type throughput` — a deliberately *saturating*
-benchmark methodology whose whole point is to overload the server, producing huge
-queueing delays. They are not a meaningful reference for a latency-bounded SLA. This
-study's own sweep-based load pattern (ramping from low load toward saturation) will
-produce genuinely comparable data — expect to revisit both thresholds once the
-baseline and first few sweep-driven trials report real numbers, and record whatever
-change is made here.
+`goal.constraints` uses **TTFT P95 ≤ 1500ms** and **ITL P95 ≤ 300ms** — loosened
+2026-07-16 from an initial 1000ms/50ms, still a generic interactive-chat industry
+starting point (2026-07-15 decision), **not** derived from `0-explorative`'s own
+observed TTFT/ITL numbers. Those numbers (baseline ~38.9s TTFT P95, ~598ms ITL P95,
+extracted directly from `0-explorative`'s own export) were measured under
+GuideLLM's `--rate-type throughput` — a deliberately *saturating* benchmark
+methodology whose whole point is to overload the server, producing huge queueing
+delays. They are not a meaningful reference for a latency-bounded SLA. This study's
+own ramp-based load pattern (ramping from low load toward saturation) will produce
+genuinely comparable data — expect to revisit both thresholds again once the
+baseline and first few ramp-driven trials under the recalibrated 0.2-2.5 req/s
+range report real numbers, and record whatever change is made here. The same
+values are mirrored in `k8s/04-inference-perf-config.yaml`'s `x-slo-ttft-ms`/
+`x-slo-tpot-ms` headers, kept in sync since they tell the same SLO story from two
+independent places (Akamas' own enforcement vs. inference-perf's own report).
 
 ## Real bugs hit and fixed getting this study's load test running (2026-07-16)
 

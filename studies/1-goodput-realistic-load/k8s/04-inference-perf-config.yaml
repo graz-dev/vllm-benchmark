@@ -86,10 +86,11 @@ data:
       # a chatbot SLA) — expect to recalibrate once this study's own baseline/sweep
       # results are in. Akamas' own goal.constraints (in the study YAML) is the actual
       # enforcement mechanism for the optimizer; these headers make inference-perf's own
-      # report independently show the same SLO story.
+      # report independently show the same SLO story, so they're kept in sync with it —
+      # loosened 2026-07-16 from 1000ms/50ms to match goal.constraints' own 1500ms/300ms.
       headers:
-        x-slo-ttft-ms: "1000"
-        x-slo-tpot-ms: "50"
+        x-slo-ttft-ms: "1500"
+        x-slo-tpot-ms: "300"
       slo_unit: "ms"
 
     server:
