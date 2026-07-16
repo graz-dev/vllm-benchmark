@@ -34,9 +34,8 @@ data:
     # run_test_goodput.sh's own timeout comment). Cut from an original 10 stages
     # (2026-07-16): a full 10-stage/60s run took ~43 minutes end-to-end once real
     # queueing set in near saturation — at up to 1000 experiments, that's not
-    # tractable. 6 stages keeps the same 1-20 req/s range with a coarser step,
-    # trading some resolution on exactly where the SLA breaks for a per-trial cost
-    # that's actually survivable across a full optimize step.
+    # tractable. 6 stages trades some resolution on exactly where the SLA breaks
+    # for a per-trial cost that's actually survivable across a full optimize step.
     #
     # NOT load.sweep (the automatic saturation-point-discovery preprocessing phase)
     # — confirmed 2026-07-16 from a real hung job: sweep's preprocessing stage hits
@@ -46,26 +45,33 @@ data:
     # the server has nothing in flight, but the client's own bookkeeping never
     # clears). Bypassing sweep entirely avoids that code path.
     #
-    # Rates below (1 to 20 req/s, linear) are a ROUGH GUESS at a range that spans
-    # under-saturated to over-saturated for a single A10G serving Qwen2.5-7B —
-    # NOT derived from this study's own saturation point (that's exactly what
-    # sweep would have measured, and we're bypassing it). Flagged as a placeholder
-    # to recalibrate once the baseline/first trials show real queueing behavior —
-    # same caveat as the TTFT/ITL thresholds and windowing maxStdDev below.
+    # Rates: 0.2 to 2.5 req/s, linear — REVISED 2026-07-16, down from an original
+    # 1-20 req/s guess that turned out to be wildly oversaturated for this specific
+    # hardware/model/dataset combination. Real ShareGPT prompts are long (observed
+    # mean ~1400-1600 tokens, P90 ~2200-2350) — far heavier than 0-explorative's
+    # fixed 512-token synthetic prompts. Observed peak prefill_token_throughput on
+    # this A10G is ~4000 tok/s; at rate=20 req/s x ~1500 tok/prompt, sustaining
+    # that would need ~30000 tok/s of prefill alone, ~7-8x more than this hardware
+    # delivers — meaning every stage in the original range was already deep in
+    # saturation, which is also why the ramp showed no rising trend (flat-bad from
+    # stage 0, not a gradual climb). 4000/1500 ≈ 2.6 req/s is a rough prefill-only
+    # ceiling; picked 2.5 req/s as the top of this range accordingly (decode work
+    # competing for the same GPU/KV-cache means the true ceiling is likely lower
+    # still — recalibrate again once this range's own baseline data is in).
     load:
       type: constant
       stages:
-        - rate: 1.0
+        - rate: 0.2
           duration: 60
-        - rate: 4.8
+        - rate: 0.66
           duration: 60
-        - rate: 8.6
+        - rate: 1.12
           duration: 60
-        - rate: 12.4
+        - rate: 1.58
           duration: 60
-        - rate: 16.2
+        - rate: 2.04
           duration: 60
-        - rate: 20.0
+        - rate: 2.5
           duration: 60
 
     api:

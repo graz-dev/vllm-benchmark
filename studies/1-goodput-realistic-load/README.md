@@ -54,7 +54,7 @@ Three deliberate changes from `0-explorative`, all in service of the same goal
   explicit `data.path` pointing at a locally-prepared, cleaned copy of
   `anon8231489123/ShareGPT_Vicuna_unfiltered` (not the tool's own auto-download —
   see "Real bugs hit and fixed" below), `load` as 6 explicit stages of increasing
-  rate (1 to 20 req/s, 60s each), not `load.sweep`'s automatic saturation-point
+  rate (0.2 to 2.5 req/s, 60s each), not `load.sweep`'s automatic saturation-point
   discovery — see `k8s/04-inference-perf-config.yaml`. `api.streaming: true` is
   required for TTFT/ITL/TPOT metrics at all; `x-slo-ttft-ms`/`x-slo-tpot-ms`
   headers give the tool's own report a native `goodput_metrics` block alongside
@@ -322,7 +322,7 @@ fixes scattered across `k8s/`:
    bookkeeping bug, not a model or dataset problem — ruled out by checking vLLM's
    own metrics directly rather than assuming.
    **Fix**: bypassed `load.sweep` entirely — `k8s/04-inference-perf-config.yaml`
-   uses explicit `stages` (rate 1→20 req/s, 60s each) instead of letting the
+   uses explicit `stages` (rate 0.2→2.5 req/s, 60s each) instead of letting the
    tool auto-discover the saturation point. The exact rate range is a rough guess
    (see that file's own comment), not derived from this study's own data — flagged
    for recalibration alongside the other placeholder values in this README.
@@ -345,14 +345,28 @@ fixes scattered across `k8s/`:
    smoke test (rate=5, 60s) before rolling into the real ramp: Output Mean/Med/P90
    went from a flat 30/30/30 to a realistic 283.3/249.0/553.0.
 
-Also **reduced the ramp from 10 stages to 6** (2026-07-16, same rate range 1-20
-req/s, coarser step): a full 10-stage/60s run took **~43 minutes** end-to-end once
-real queueing set in near saturation (see "Windowing" above — `run_stage()` waits
-for every enqueued request to finish, not for the nominal `duration` to elapse, so
-stage time balloons well past 60s as the system saturates). Not tractable across an
-`optimize` step with up to 1000 experiments. 6 stages trades some resolution on
-exactly where the SLA breaks for a per-trial cost that's actually survivable —
-revisit alongside the rate-range recalibration once early real trials are in.
+Also **reduced the ramp from 10 stages to 6** (2026-07-16): a full 10-stage/60s run
+took **~43 minutes** end-to-end once real queueing set in near saturation (see
+"Windowing" above — `run_stage()` waits for every enqueued request to finish, not
+for the nominal `duration` to elapse, so stage time balloons well past 60s as the
+system saturates). Not tractable across an `optimize` step with up to 1000
+experiments. 6 stages trades some resolution on exactly where the SLA breaks for a
+per-trial cost that's actually survivable.
+
+5. **The original 1-20 req/s range was itself the reason the run above looked
+   "flat-bad" instead of a rising ramp, and reported miserable numbers (TTFT into
+   the minutes)** — confirmed 2026-07-16 by comparing observed peak
+   `prefill_token_throughput` (~4000 tok/s on this A10G) against what the range
+   actually demanded. Real ShareGPT prompts are long (observed mean ~1400-1600
+   tokens, P90 ~2200-2350) — far heavier than `0-explorative`'s fixed 512-token
+   synthetic prompts. At `rate=20 req/s`, sustaining ~1500-token prompts needs
+   ~30000 tok/s of prefill alone — roughly 7-8x more than this hardware delivers.
+   Every stage in the original range was already deep in saturation, including the
+   low end, which is exactly why the ramp never showed a rising trend: there was no
+   under-saturated segment left to contrast against.
+   **Fix**: rate range revised to **0.2-2.5 req/s** — 4000/1500 ≈ 2.6 req/s as a
+   rough prefill-only ceiling, with headroom cut for decode work competing on the
+   same GPU/KV-cache. Still a placeholder pending this range's own baseline data.
 
 ## Prerequisites still open before this study can be created
 
