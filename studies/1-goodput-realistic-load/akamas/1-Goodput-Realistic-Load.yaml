@@ -119,6 +119,19 @@ parameterConstraints:
   - name: speculative decoding enabled requires a real (non-sentinel) spec_tokens
     formula: vLLM.spec_method == "none" || vLLM.spec_tokens > 0
 
+  # --- NEW 2026-07-16: confirmed from a real crash (experiment 7) ---
+  # ngram_gpu's proposer kernel (NgramProposerGPU/NgramGPUKernel) is implemented via
+  # vLLM's @support_torch_compile machinery and unconditionally needs an active
+  # compilation backend; optimization_level=0 sets compilation_config.mode to
+  # CompilationMode.NONE (compilation fully disabled), which crashes engine-core
+  # init with "ValueError: No compilation mode is set" regardless of any other
+  # parameter. Deterministic, not a resource-contention issue — see README's
+  # "Incidents found during the optimize step" for the full traceback. Only
+  # ngram_gpu is covered: whether "suffix" shares the same GPU-kernel code path
+  # (and thus the same crash) is unconfirmed, no crash evidence either way yet.
+  - name: ngram_gpu speculative decoding requires a compilation backend (optimization_level=0 disables it)
+    formula: vLLM.spec_method != "ngram_gpu" || vLLM.optimization_level != 0
+
 steps:
   - name: baseline
     type: baseline

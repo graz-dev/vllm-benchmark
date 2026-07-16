@@ -415,11 +415,13 @@ partially avoidable in advance, unlike ordinary resource-contention noise.
    `compilation_config.mode = CompilationMode.NONE` (compilation fully
    disabled), regardless of what other parameters are set. Unlike #2, this is
    an *interaction* between two parameters rather than one categorically
-   unsupported value, so a `parameterConstraints` entry
-   (`vLLM.spec_method != "ngram_gpu" || vLLM.optimization_level != "0"`, and
-   possibly the same for `suffix` if it shares the same GPU-kernel code path —
-   unconfirmed, no crash evidence yet either way) could let the optimizer
-   avoid it directly instead of just eating the failure. **Not yet added.**
+   unsupported value, so unlike #2 it's directly fixable with a
+   `parameterConstraints` entry rather than a `parametersSelection` domain
+   change. **Fixed 2026-07-16**:
+   `vLLM.spec_method != "ngram_gpu" || vLLM.optimization_level != 0` in
+   `akamas/1-Goodput-Realistic-Load.yaml`. Only `ngram_gpu` is covered —
+   whether `suffix` shares the same GPU-kernel code path (and thus the same
+   crash) is unconfirmed, no crash evidence either way yet.
 
 ## Prerequisites still open before this study can be created
 
