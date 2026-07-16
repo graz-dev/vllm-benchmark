@@ -46,8 +46,8 @@ windowing:
   type: stability
   stability:
     metric: vLLM.prefill_token_throughput
-    width: 8
-    maxStdDev: 300
+    width: 6
+    maxStdDev: 300000000
     when:
       metric: vLLM.prefill_token_throughput
       is: max

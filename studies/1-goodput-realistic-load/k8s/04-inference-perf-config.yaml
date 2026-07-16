@@ -62,17 +62,17 @@ data:
       type: constant
       stages:
         - rate: 0.2
-          duration: 60
+          duration: 300
         - rate: 0.66
-          duration: 60
+          duration: 300
         - rate: 1.12
-          duration: 60
+          duration: 300
         - rate: 1.58
-          duration: 60
+          duration: 300
         - rate: 2.04
-          duration: 60
+          duration: 300
         - rate: 2.5
-          duration: 60
+          duration: 300
 
     api:
       type: chat                # Qwen2.5-7B-Instruct is an instruction/chat model
