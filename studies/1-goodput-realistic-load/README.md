@@ -372,6 +372,55 @@ per-trial cost that's actually survivable.
    rough prefill-only ceiling, with headroom cut for decode work competing on the
    same GPU/KV-cache. Still a placeholder pending this range's own baseline data.
 
+## Incidents found during the `optimize` step (2026-07-16)
+
+Real crashes hit by actual sampled experiments once the study was running —
+kept here the same way `0-explorative` documents its own incidents, so they
+read as known/root-caused rather than mysterious recurring failures. All three
+are tolerated by `maxFailedExperiments: 200` (the study keeps running), but the
+first two are worth a `parameterConstraints` fix since they're either fully or
+partially avoidable in advance, unlike ordinary resource-contention noise.
+
+1. **KV cache budget exhausted by speculative decoding + a large `max_num_seqs`**
+   (experiment 4) — `vllm serve` refused to start:
+   `ValueError: To serve at least one request with the model's max seq len
+   (32768), (1.75 GiB KV cache is needed, which is larger than the available
+   KV cache memory (1.49 GiB)`. Root cause: `spec_method=ngram_gpu` +
+   `spec_tokens=7` + `max_num_seqs=867` + `max_cudagraph_capture_size=160` +
+   `optimization_level=2` together consumed enough of the
+   `gpu_memory_utilization`-bounded budget that too little was left for KV
+   cache to cover even one sequence at the pinned `max_model_len=32768` —  the
+   same class of memory-accounting gap as `0-explorative`'s own sampler-warmup
+   OOM incident (see that study's README), just with speculative decoding as
+   the new contributing factor. Not (yet) covered by any `parameterConstraints`
+   entry.
+2. **`spec_method=mtp` is not implemented by the installed vLLM version at all**
+   (experiment 6) — hard, deterministic failure, not a resource issue:
+   `NotImplementedError: Unsupported speculative method: 'mtp'`, raised
+   unconditionally by vLLM 0.22.0's own `SpeculativeConfig.__post_init__`
+   regardless of any other parameter. Likely requires either a newer vLLM
+   version or a model with a native MTP head (e.g. DeepSeek-V3) — Qwen2.5-7B
+   has neither. Every sampled `spec_method=mtp` trial fails 100% of the time —
+   a genuine pack-vs-installed-version domain mismatch (the pack's
+   `spec_method` categories include a value this vLLM build can't run), same
+   class of issue as `0-explorative`'s `block_size=106` incident. **Not yet
+   removed from `parametersSelection`** — flagged, not fixed, pending a
+   decision on whether to drop the category here or report it back to the pack.
+3. **`spec_method=ngram_gpu` + `optimization_level=0` crashes at engine-core
+   init** (experiment 7) — also deterministic:
+   `ValueError: No compilation mode is set`, raised from
+   `NgramProposerGPU`'s kernel (`NgramGPUKernel`), which is itself implemented
+   via vLLM's `@support_torch_compile` machinery and unconditionally requires
+   an active compilation backend — but `optimization_level=0` sets
+   `compilation_config.mode = CompilationMode.NONE` (compilation fully
+   disabled), regardless of what other parameters are set. Unlike #2, this is
+   an *interaction* between two parameters rather than one categorically
+   unsupported value, so a `parameterConstraints` entry
+   (`vLLM.spec_method != "ngram_gpu" || vLLM.optimization_level != "0"`, and
+   possibly the same for `suffix` if it shares the same GPU-kernel code path —
+   unconfirmed, no crash evidence yet either way) could let the optimizer
+   avoid it directly instead of just eating the failure. **Not yet added.**
+
 ## Prerequisites still open before this study can be created
 
 1. ~~Confirm the installed vLLM pack actually reports `1.5.1`~~ — done, pack
