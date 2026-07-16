@@ -91,7 +91,7 @@ same stack); 1 (`compilation_mode`) is deliberately excluded, same reason as
 | `vLLM.max_cudagraph_capture_size` | [1, 1024] | *(not rendered)* |
 | `vLLM.block_size` | 16, 32, 48, 64, 80, 96, 112, 128 (**ordinal**, not categorical — pack v1.5.1) | *(not rendered)* |
 | `vLLM.attention_backend` | FLASH_ATTN, FLASHINFER, TRITON_ATTN | *(not rendered)* |
-| `vLLM.spec_method` **(NEW)** | none, ngram, ngram_gpu, suffix, mtp | *(not rendered)* |
+| `vLLM.spec_method` **(NEW)** | none, ngram, ngram_gpu (`suffix`/`mtp` removed 2026-07-16, see "Incidents" below) | *(not rendered)* |
 | `vLLM.spec_tokens` **(NEW)** | [0, 16] | *(not rendered)* |
 
 ### Baseline rendering — a deliberate change from `0-explorative`
@@ -403,9 +403,10 @@ partially avoidable in advance, unlike ordinary resource-contention noise.
    has neither. Every sampled `spec_method=mtp` trial fails 100% of the time —
    a genuine pack-vs-installed-version domain mismatch (the pack's
    `spec_method` categories include a value this vLLM build can't run), same
-   class of issue as `0-explorative`'s `block_size=106` incident. **Not yet
-   removed from `parametersSelection`** — flagged, not fixed, pending a
-   decision on whether to drop the category here or report it back to the pack.
+   class of issue as `0-explorative`'s `block_size=106` incident. **Fixed
+   2026-07-16**: removed `mtp` from `vLLM.spec_method`'s categories in
+   `parametersSelection` — a categorical, unconditional failure like this isn't
+   avoidable via `parameterConstraints`, only by not offering the value at all.
 3. **`spec_method=ngram_gpu` + `optimization_level=0` crashes at engine-core
    init** (experiment 7) — also deterministic:
    `ValueError: No compilation mode is set`, raised from
@@ -413,15 +414,27 @@ partially avoidable in advance, unlike ordinary resource-contention noise.
    via vLLM's `@support_torch_compile` machinery and unconditionally requires
    an active compilation backend — but `optimization_level=0` sets
    `compilation_config.mode = CompilationMode.NONE` (compilation fully
-   disabled), regardless of what other parameters are set. Unlike #2, this is
-   an *interaction* between two parameters rather than one categorically
-   unsupported value, so unlike #2 it's directly fixable with a
-   `parameterConstraints` entry rather than a `parametersSelection` domain
-   change. **Fixed 2026-07-16**:
-   `vLLM.spec_method != "ngram_gpu" || vLLM.optimization_level != 0` in
-   `akamas/1-Goodput-Realistic-Load.yaml`. Only `ngram_gpu` is covered —
-   whether `suffix` shares the same GPU-kernel code path (and thus the same
-   crash) is unconfirmed, no crash evidence either way yet.
+   disabled), regardless of what other parameters are set. Unlike #2 and #4,
+   this is an *interaction* between two parameters rather than one
+   categorically unsupported value, so it's fixable with a
+   `parameterConstraints` entry rather than a domain change. **Fixed
+   2026-07-16**: `vLLM.spec_method != "ngram_gpu" || vLLM.optimization_level
+   != 0` added to `akamas/1-Goodput-Realistic-Load.yaml`.
+4. **`spec_method=suffix` requires a third-party package that isn't installed**
+   (experiment 8) — also a hard, deterministic failure:
+   `ImportError: Arctic Inference is required for suffix decoding. Install via
+   pip install arctic-inference==0.1.1`, raised from vLLM's own
+   `SpeculativeConfig._validate_suffix_decoding()`. This was initially
+   suspected of sharing #3's compilation-backend crash (same GPU-kernel family
+   as `ngram_gpu`) but turned out to be a completely unrelated cause — a
+   missing dependency in the `vllm/vllm-openai:v0.22.0` image, not present for
+   any parameter combination. **Fixed 2026-07-16**: removed `suffix` from
+   `vLLM.spec_method`'s categories alongside `mtp` — same reasoning as #2, a
+   categorical failure with no parameter combination that avoids it.
+
+`spec_method`'s domain is now `[none, ngram, ngram_gpu]` — 3 of the pack's 5
+categories, the other 2 confirmed unusable in this specific environment rather
+than assumed.
 
 ## Prerequisites still open before this study can be created
 

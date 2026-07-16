@@ -88,8 +88,20 @@ parametersSelection:
     categories: [FLASH_ATTN, FLASHINFER, TRITON_ATTN]
 
   # --- NEW in pack v1.5.1, genuinely explored for the first time in this study ---
+  # Only 3 of the pack's 5 categories are actually usable in this environment —
+  # confirmed 2026-07-16 from two real crashes, not assumed:
+  #   - "mtp": NotImplementedError, vLLM 0.22.0 doesn't implement this method at all
+  #     (likely needs a newer vLLM and/or a model with a native MTP head, neither
+  #     of which apply here).
+  #   - "suffix": ImportError — requires the third-party "Arctic Inference" package
+  #     (`pip install arctic-inference==0.1.1`), not present in the
+  #     vllm/vllm-openai:v0.22.0 image this study uses.
+  # Both are categorical, unconditional failures (same every time regardless of any
+  # other parameter) — not interactions a parameterConstraint could avoid, so they're
+  # removed from the domain entirely rather than constrained around. See README's
+  # "Incidents found during the optimize step" for the full tracebacks.
   - name: vLLM.spec_method
-    categories: [none, ngram, ngram_gpu, suffix, mtp]
+    categories: [none, ngram, ngram_gpu]
   - name: vLLM.spec_tokens
     domain: [0, 16]
 
@@ -126,9 +138,11 @@ parameterConstraints:
   # CompilationMode.NONE (compilation fully disabled), which crashes engine-core
   # init with "ValueError: No compilation mode is set" regardless of any other
   # parameter. Deterministic, not a resource-contention issue — see README's
-  # "Incidents found during the optimize step" for the full traceback. Only
-  # ngram_gpu is covered: whether "suffix" shares the same GPU-kernel code path
-  # (and thus the same crash) is unconfirmed, no crash evidence either way yet.
+  # "Incidents found during the optimize step" for the full traceback. "suffix" was
+  # briefly suspected of sharing this same GPU-kernel code path, but turned out to
+  # fail for an unrelated reason (missing Arctic Inference dependency, confirmed
+  # experiment 8) and has been removed from spec_method's own categories above —
+  # so this constraint only needs to cover ngram_gpu.
   - name: ngram_gpu speculative decoding requires a compilation backend (optimization_level=0 disables it)
     formula: vLLM.spec_method != "ngram_gpu" || vLLM.optimization_level != 0
 
