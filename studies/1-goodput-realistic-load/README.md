@@ -459,38 +459,67 @@ later; not today's problem to solve.)
 
 ### Sizing the concurrency sweep for this specific hardware/model/dataset
 
-`--concurrency 1,2,4,8,16,32`, 300s per level (`--benchmark-duration 300`) — sized
-from Little's Law (`concurrency ≈ throughput × latency`) using numbers already
-established for this exact stack, not guessed fresh:
+`--concurrency 16,32,48,64,80,96`, 300s per level (`--benchmark-duration 300`).
 
-- **GPU**: single NVIDIA A10G (24GB), serving Qwen2.5-7B-Instruct in bf16 (14.19 GiB
-  weights, confirmed from a real deployment's own logs).
-- **Dataset**: real ShareGPT prompts average ~1400-1600 tokens (P90 ~2200-2350);
-  real generated outputs average ~283 tokens (P50 249, P90 553 — from the
-  single-stage smoke test in "Real bugs" #4 above, the only clean per-request
-  length sample this study has taken so far).
-- **Observed peak `prefill_token_throughput`** on this A10G: ~4000 tok/s.
-- At **light load**, estimated per-request latency ≈ TTFT + decode time:
-  - TTFT ≈ 1500 tokens / 4000 tok/s ≈ 0.36s (best-case, uncontended prefill).
-  - Decode ≈ 283 tokens × ~50ms/token (roughly the lowest-load TPOT this study
-    observed pre-saturation) ≈ 14.2s.
-  - Total ≈ **~14.5s** per request, unsaturated.
-- Combined with the ~2.5 req/s prefill-throughput ceiling already derived for the
-  rate-based ramp (see "Real bugs" #5): concurrency ≈ 2.5 × 14.5 ≈ **~36**.
+**History**: originally sized from Little's Law (`concurrency ≈ throughput ×
+latency`), landing on `1,2,4,8,16,32,64` (~36 estimated saturation point,
+bracketed between 32 and 64), later trimmed to `1,2,4,8,16,32` (6 levels, 300s
+each) on explicit request. Once real trials ran on this list, a real problem
+surfaced: with the study's own `baseline` config (`gpu_memory_utilization=0.90`,
+everything else at vLLM's own defaults — nothing else rendered), the system
+never saturates within `1-32` — `windowing.stability` (which selects the highest
+*stable* `prefill_token_throughput` window) always lands on the *last* rung of
+the ramp, because throughput is still climbing there, not because that rung is
+actually the server's limit. That makes it hard to see any tuning impact: there's
+no "good vs bad" latency contrast within the observed range for Akamas'
+`goal.constraints` (TTFT/ITL P95) to actually bind against.
 
-Originally 7 levels doubling from 1 to 64 (bracketing the ~36 estimate between 32
-and 64). Changed 2026-07-17 (explicit user request) to 6 levels capped at 32 and
-300s/level instead of 60s/level — a deliberate tradeoff: each level now gets 5x
-longer to reach a stable window (this study's `windowing.stability` scans for a
-stable interval per level, so more samples per level is directly useful), at the
-cost of no longer bracketing the ~36 estimate from above (32 is now the top level,
-below the estimated saturation concurrency, not past it). Total sweep time:
-6 x 300s = 30 min, plus a one-time ~5 min ShareGPT dataset-validation pass on the
-very first Akamas trial ever (see "Token length cap on ShareGPT" below) — ~35 min
-first run, ~30 min every run after. `windowing.stability.width` was changed from
-7 to 6 to match (one sample per concurrency level, same alignment philosophy as
-the old rate-based ramp). Same placeholder status as every other numeric choice in
-this README: expected to be revisited once real per-configuration results are in.
+**Fixed 2026-07-17 with real cluster measurements**, not another estimate: with
+Akamas paused, redeployed the exact baseline vLLM config (confirmed rendered
+args: only `--gpu-memory-utilization=0.90`, no other flags — vLLM's own stock
+defaults for everything else) and ran manual AIPerf sweeps at `--benchmark-duration
+60` (fast iteration) against it directly:
+
+- First pass, `64,96,128,192,256,384`: goodput (SLA-compliant req/s) peaked
+  ~5.27-5.31 across 64-128, then collapsed to 2.66 by 256 and 0.52 by 384 — a
+  real saturate-then-collapse curve, but TTFT P90 was *already* ~1517ms (past the
+  1500ms SLA) at the very first level tested (64), meaning the useful transition
+  zone sits *below* 64, not above it.
+- Second pass, `16,32,48,64,80,96` (smaller, constant +16 steps, no more
+  16→64-style jumps), confirmed the transition directly:
+
+  | Concurrency | TTFT avg | TTFT P90 | Goodput vs. raw req throughput |
+  |---|---|---|---|
+  | 16 | 143ms | 365ms | 2.05 = 2.05 (zero SLA violations) |
+  | 32 | 184ms | 378ms | 3.85 = 3.85 (zero SLA violations) |
+  | 48 | 247ms | 530ms | 5.29 = 5.29 (zero SLA violations) |
+  | 64 | 301ms | 981ms | 6.07 vs 6.10 (saturation begins) |
+  | 80 | 412ms | 1032ms | 5.60, declining |
+  | 96 | 597ms | 1808ms | 5.36, declining further |
+
+  TTFT is the binding constraint here, not ITL (ITL avg stays under 70ms through
+  96, nowhere near its 300ms limit at this concurrency range). Saturation begins
+  right at the 4th of 6 levels (64) — close to the middle of the ramp, as
+  intended, with 3 clean under-SLA levels before it and 2 visibly-degrading
+  levels after.
+
+**Caveat, not yet re-validated**: this whole exploration used `--benchmark-duration
+60` for fast iteration; the real study runs each level for 300s. Longer sustained
+load could shift the true knee somewhat *lower* than 64 (not higher) — cumulative
+effects a 60s burst won't show yet (KV-cache pressure, rising preemption rate)
+only build up over sustained load, and Akamas' own `windowing.stability` also
+gets 5x more samples per level to judge stability against, which a 60s window
+doesn't exercise the same way. Not re-tested at 300s before committing this list
+(would cost ~15 more minutes for just the 48/64/80 range) — flagged here so a
+future look at real Akamas trial data checks whether the observed windowing point
+still lands near level 4, not just assumes this holds.
+
+Total sweep time: 6 x 300s = 30 min, plus a one-time ~5 min ShareGPT
+dataset-validation pass on the very first Akamas trial ever (see "Token length
+cap on ShareGPT" below) — ~35 min first run, ~30 min every run after.
+`windowing.stability.width` stays at 6 (one sample per concurrency level, same
+alignment philosophy as the old rate-based ramp) — unchanged since the level
+*count* didn't change, only the concurrency values.
 
 ### Token length cap on ShareGPT (2026-07-17) — built-in, not a config choice
 

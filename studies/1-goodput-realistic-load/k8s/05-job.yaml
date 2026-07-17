@@ -116,7 +116,7 @@ spec:
                 --streaming \
                 --input-file "$CACHE_FILE" \
                 --custom-dataset-type inputs_json \
-                --concurrency 1,2,4,8,16,32 \
+                --concurrency 16,32,48,64,80,96 \
                 --benchmark-duration 300 \
                 --goodput "time_to_first_token:1500 inter_token_latency:300" \
                 --ui simple \
