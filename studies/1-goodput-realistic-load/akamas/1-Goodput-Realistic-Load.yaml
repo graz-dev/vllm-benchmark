@@ -53,7 +53,8 @@ windowing:
       is: max
 
 parametersSelection:
-  # --- Same 16 as 0-explorative ---
+  # --- Same 16 as 0-explorative, minus dtype and prefix_caching_hash_algo (both
+  #     removed 2026-07-17, see the "Pinned"/"Excluded" tables in README) ---
   - name: vLLM.gpu_memory_utilization
     domain: [0.85, 0.95]
   - name: vLLM.max_num_seqs
@@ -66,14 +67,10 @@ parametersSelection:
     categories: [balanced, interactivity, throughput]
   - name: vLLM.optimization_level
     domain: [0, 3]
-  - name: vLLM.dtype
-    categories: [auto, float16, bfloat16]
   - name: vLLM.enforce_eager
     categories: ["true", "false"]
   - name: vLLM.scheduling_policy
     categories: [fcfs, priority]
-  - name: vLLM.prefix_caching_hash_algo
-    categories: [sha256, sha256_cbor]
   - name: vLLM.disable_cascade_attn
     categories: ["true", "false"]
   - name: vLLM.tokenizer_mode
@@ -86,24 +83,6 @@ parametersSelection:
     categories: ["16", "32", "48", "64", "80", "96", "112", "128"]
   - name: vLLM.attention_backend
     categories: [FLASH_ATTN, FLASHINFER, TRITON_ATTN]
-
-  # --- NEW in pack v1.5.1, genuinely explored for the first time in this study ---
-  # Only 3 of the pack's 5 categories are actually usable in this environment —
-  # confirmed 2026-07-16 from two real crashes, not assumed:
-  #   - "mtp": NotImplementedError, vLLM 0.22.0 doesn't implement this method at all
-  #     (likely needs a newer vLLM and/or a model with a native MTP head, neither
-  #     of which apply here).
-  #   - "suffix": ImportError — requires the third-party "Arctic Inference" package
-  #     (`pip install arctic-inference==0.1.1`), not present in the
-  #     vllm/vllm-openai:v0.22.0 image this study uses.
-  # Both are categorical, unconditional failures (same every time regardless of any
-  # other parameter) — not interactions a parameterConstraint could avoid, so they're
-  # removed from the domain entirely rather than constrained around. See README's
-  # "Incidents found during the optimize step" for the full tracebacks.
-  - name: vLLM.spec_method
-    categories: [none, ngram, ngram_gpu]
-  - name: vLLM.spec_tokens
-    domain: [0, 16]
 
 parameterConstraints:
   # --- Carried forward unchanged from 0-explorative (block_size is now ordinal, not
@@ -121,42 +100,16 @@ parameterConstraints:
   - name: TRITON_ATTN does not support fp8_e5m2 kv_cache_dtype (query-quant bug)
     formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e5m2"
 
-  # --- NEW: speculative decoding gate + forced-sentinel dependent (pack v1.5.1) ---
-  # See knowledge/notes/2026-07-vllm-pack-v1.5.0-speculative-decoding-gate-pattern.md.
-  # Both directions needed: the first stops the optimizer wasting budget varying
-  # spec_tokens while speculation is off; the second stops it from ever pairing a real
-  # method with the 0 off-sentinel, which would crash vLLM at startup.
-  - name: speculative decoding disabled forces spec_tokens to its off sentinel
-    formula: vLLM.spec_method != "none" || vLLM.spec_tokens == 0
-  - name: speculative decoding enabled requires a real (non-sentinel) spec_tokens
-    formula: vLLM.spec_method == "none" || vLLM.spec_tokens > 0
-
-  # --- NEW 2026-07-16: confirmed from a real crash (experiment 7) ---
-  # ngram_gpu's proposer kernel (NgramProposerGPU/NgramGPUKernel) is implemented via
-  # vLLM's @support_torch_compile machinery and unconditionally needs an active
-  # compilation backend; optimization_level=0 sets compilation_config.mode to
-  # CompilationMode.NONE (compilation fully disabled), which crashes engine-core
-  # init with "ValueError: No compilation mode is set" regardless of any other
-  # parameter. Deterministic, not a resource-contention issue — see README's
-  # "Incidents found during the optimize step" for the full traceback. "suffix" was
-  # briefly suspected of sharing this same GPU-kernel code path, but turned out to
-  # fail for an unrelated reason (missing Arctic Inference dependency, confirmed
-  # experiment 8) and has been removed from spec_method's own categories above —
-  # so this constraint only needs to cover ngram_gpu.
-  - name: ngram_gpu speculative decoding requires a compilation backend (optimization_level=0 disables it)
-    formula: vLLM.spec_method != "ngram_gpu" || vLLM.optimization_level != 0
-
-  # --- NEW 2026-07-16: confirmed from a real crash (experiment 16) ---
-  # vLLM's own VllmConfig validation rejects async_scheduling=true paired with plain
-  # "ngram" speculative decoding: "Currently, async scheduling is only supported with
-  # EAGLE/MTP/Draft Model/NGram GPU kind of speculative decoding" — note this is
-  # "NGram GPU" specifically, not plain "ngram" (CPU-based), which is what this study
-  # tunes alongside "ngram_gpu". Fails at Pydantic config-construction time, before
-  # engine-core even starts — deterministic, same class of interaction as the
-  # ngram_gpu/optimization_level constraint above. See README's "Incidents found
-  # during the optimize step" for the full traceback.
-  - name: async scheduling is incompatible with plain ngram speculative decoding
-    formula: vLLM.spec_method != "ngram" || vLLM.async_scheduling == "false"
+  # NOTE 2026-07-17: spec_method/spec_tokens and their 4 parameterConstraints
+  # (the 2 sentinel-gate ones + the ngram_gpu/optimization_level and
+  # ngram/async_scheduling interaction ones) were REMOVED from this study
+  # entirely — speculative decoding caused enough real crashes (5 distinct
+  # incidents: mtp not implemented, suffix missing a dependency, ngram_gpu +
+  # optimization_level=0, ngram + async_scheduling=true, plus the original KV
+  # cache budget exhaustion) that it's no longer tuned here at all. Full history
+  # kept in README's "Incidents found during the optimize step" section —
+  # removed from active enforcement here since there's nothing left to
+  # constrain once spec_method/spec_tokens aren't in parametersSelection.
 
 steps:
   - name: baseline

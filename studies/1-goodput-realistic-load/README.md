@@ -25,10 +25,11 @@ Three deliberate changes from `0-explorative`, all in service of the same goal
    saturation point (6 stages × 60s), not a single fixed-rate throughput-seeking
    benchmark — this directly surfaces *where* the latency SLA starts being violated,
    which is exactly the goodput ceiling this study is trying to find.
-3. **Parameter surface**: all of `0-explorative`'s 16 tuned parameters, plus the two
-   new pack v1.5.1 parameters (`spec_method`/`spec_tokens`, speculative decoding) —
-   genuinely explored here for the first time, since n-gram speculation needs no draft
-   model and works on any hardware.
+3. **Parameter surface**: `0-explorative`'s 16 tuned parameters minus `dtype` and
+   `prefix_caching_hash_algo` (14 total — see "Parameters tuned" below). Pack v1.5.1's
+   new `spec_method`/`spec_tokens` (speculative decoding) were tried and then dropped
+   entirely 2026-07-17 after 5 distinct crashes across the `optimize` step — see
+   "Incidents found during the optimize step."
 
 ## Stack & versions
 
@@ -66,12 +67,13 @@ Three deliberate changes from `0-explorative`, all in service of the same goal
 
 ## Parameters tuned
 
-18 of the pack's 30 parameters are searched (0-explorative's original 16, plus the two
-new speculative-decoding parameters); 11 are pinned (single GPU, non-MoE model, or a
-real incident already root-caused on this exact hardware/vLLM version — see
-`0-explorative`'s own README for the incident write-ups, unchanged here since it's the
-same stack); 1 (`compilation_mode`) is deliberately excluded, same reason as
-`0-explorative` (no direct top-level CLI flag).
+14 of the pack's 30 parameters are searched (0-explorative's original 16, minus
+`dtype` and `prefix_caching_hash_algo`, both removed 2026-07-17 — see below); 12 are
+pinned (single GPU, non-MoE model, or a real incident already root-caused on this
+exact hardware/vLLM version — see `0-explorative`'s own README for the incident
+write-ups, unchanged here since it's the same stack); 4 are deliberately excluded
+(`compilation_mode`, plus `spec_method`/`spec_tokens`/`prefix_caching_hash_algo`,
+all removed 2026-07-17 — see below and "Incidents found during the optimize step").
 
 | Parameter | Domain / categories | Baseline |
 |---|---|---|
@@ -81,26 +83,32 @@ same stack); 1 (`compilation_mode`) is deliberately excluded, same reason as
 | `vLLM.kv_cache_dtype` | auto, fp8, fp8_e4m3, fp8_e5m2 | *(not rendered)* |
 | `vLLM.performance_mode` | balanced, interactivity, throughput | *(not rendered)* |
 | `vLLM.optimization_level` | [0, 3] | *(not rendered)* |
-| `vLLM.dtype` | auto, float16, bfloat16 | *(not rendered)* |
 | `vLLM.enforce_eager` | true, false | *(not rendered)* |
 | `vLLM.scheduling_policy` | fcfs, priority | *(not rendered)* |
-| `vLLM.prefix_caching_hash_algo` | sha256, sha256_cbor | *(not rendered)* |
 | `vLLM.disable_cascade_attn` | true, false | *(not rendered)* |
 | `vLLM.tokenizer_mode` | auto, hf, slow | *(not rendered)* |
 | `vLLM.async_scheduling` | true, false | *(not rendered)* |
 | `vLLM.max_cudagraph_capture_size` | [1, 1024] | *(not rendered)* |
 | `vLLM.block_size` | 16, 32, 48, 64, 80, 96, 112, 128 (**ordinal**, not categorical — pack v1.5.1) | *(not rendered)* |
 | `vLLM.attention_backend` | FLASH_ATTN, FLASHINFER, TRITON_ATTN | *(not rendered)* |
-| `vLLM.spec_method` **(NEW)** | none, ngram, ngram_gpu (`suffix`/`mtp` removed 2026-07-16, see "Incidents" below) | *(not rendered)* |
-| `vLLM.spec_tokens` **(NEW)** | [0, 16] | *(not rendered)* |
+
+**Removed from tuning 2026-07-17**: `vLLM.dtype` (moved to Pinned — it's the model's
+numeric precision/quantization, not a goodput lever this study cares about) and
+`vLLM.prefix_caching_hash_algo` (moved to Excluded — prefix caching is now disabled
+entirely via a hardcoded `--no-enable-prefix-caching` flag, so which hash algorithm
+it would have used no longer applies). `vLLM.spec_method`/`vLLM.spec_tokens` (the
+pack v1.5.1 speculative-decoding parameters, genuinely explored for the first time
+in this study) were also removed entirely — see "Incidents found during the optimize
+step" for the 5 distinct crashes that motivated dropping them rather than continuing
+to patch around each one.
 
 ### Baseline rendering — a deliberate change from `0-explorative`
 
 `0-explorative`'s baseline `values:` explicitly restated vLLM's own assumed defaults
 for every tuned parameter. This study's baseline instead renders **only**
-`vLLM.gpu_memory_utilization`, pinned to **0.90**; all other 28 pack parameters
-(the 16 other tuned params, `spec_method`/`spec_tokens`, and the 11 pinned params)
-are excluded from computation, so the rendered command ends up close to a genuinely
+`vLLM.gpu_memory_utilization`, pinned to **0.90**; all other 29 pack parameters
+(13 other tuned params, 12 pinned params, and 4 excluded params) are excluded from
+computation, so the rendered command ends up close to a genuinely
 bare `vllm serve <model> --port=8000 --host=0.0.0.0 --served-model-name=...
 --enable-mfu-metrics --gpu-memory-utilization=0.90`, not every tunable flag re-stated
 at a default value. The `optimize` step sets neither of these fields, so Akamas stays
@@ -181,17 +189,26 @@ same vLLM version, same incidents apply):
 | `vLLM.max_num_partial_prefills` | 1 | "Concurrent Partial Prefill" is not supported on this vLLM 0.22.0/A10G combo — see `0-explorative`'s "Incident: Concurrent Partial Prefill crash." |
 | `vLLM.max_long_partial_prefills` | 1 | Same incident. |
 | `vLLM.long_prefill_token_threshold` | 0 | Same incident. |
+| `vLLM.dtype` **(moved here 2026-07-17)** | auto (pack default) | Model numeric precision/quantization — not a goodput lever this study is investigating; left at vLLM's own auto-selection from the checkpoint. |
 
-**Excluded entirely** (not in `parametersSelection`, not pinned, not referenced by the
-deployment template): `vLLM.compilation_mode` — same reasoning as `0-explorative`, no
-direct top-level CLI flag exists for it (only reachable via the nested
-`--compilation-config` JSON argument).
+**Excluded entirely** (not in `parametersSelection`, not pinned):
+
+| Parameter | Why |
+|---|---|
+| `vLLM.compilation_mode` | Same reasoning as `0-explorative` — no direct top-level CLI flag exists for it (only reachable via the nested `--compilation-config` JSON argument). |
+| `vLLM.prefix_caching_hash_algo` **(moved here 2026-07-17)** | Prefix caching is now disabled entirely via a hardcoded `--no-enable-prefix-caching` flag in the deployment template (confirmed against vLLM v0.22.0 source: `enable_prefix_caching: bool = True` in `config/cache.py`, a standard `BooleanOptionalAction` flag) — which hash algorithm it would have used no longer applies. |
+| `vLLM.spec_method` / `vLLM.spec_tokens` **(removed 2026-07-17)** | Speculative decoding caused 5 distinct crashes across the `optimize` step (KV cache budget exhaustion, `mtp` not implemented, `suffix` missing a dependency, `ngram_gpu`+`optimization_level=0`, `ngram`+`async_scheduling=true`) — see "Incidents found during the optimize step" below. Rather than keep patching around each new interaction, both parameters and the deployment template's `--spec-method`/`--spec-tokens` flags were removed entirely; vLLM now runs with speculative decoding off, unconditionally. |
 
 ## Parameter constraints
 
 All 6 carried forward unchanged from `0-explorative` (the `block_size` ones are
-unaffected by its categorical→ordinal type change), plus 2 new ones for the
-speculative-decoding gate/sentinel pattern:
+unaffected by its categorical→ordinal type change). The 4 speculative-decoding
+constraints added while `spec_method`/`spec_tokens` were still tuned (2 sentinel-gate
+ones + the `ngram_gpu`/`optimization_level` and `ngram`/`async_scheduling`
+interaction fixes) were **removed 2026-07-17** along with those two parameters
+themselves — there's nothing left to constrain once neither is in
+`parametersSelection`. Full history of what each one guarded against is kept in
+"Incidents found during the optimize step" below, not deleted outright.
 
 ```yaml
 parameterConstraints:
@@ -207,10 +224,6 @@ parameterConstraints:
     formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e4m3"
   - name: TRITON_ATTN does not support fp8_e5m2 kv_cache_dtype (query-quant bug)
     formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e5m2"
-  - name: speculative decoding disabled forces spec_tokens to its off sentinel
-    formula: vLLM.spec_method != "none" || vLLM.spec_tokens == 0
-  - name: speculative decoding enabled requires a real (non-sentinel) spec_tokens
-    formula: vLLM.spec_method == "none" || vLLM.spec_tokens > 0
 ```
 
 Re-verified 2026-07-15 whether the `TRITON_ATTN`+fp8 exclusions are still needed on
@@ -443,11 +456,18 @@ partially avoidable in advance, unlike ordinary resource-contention noise.
    2026-07-16**: `vLLM.spec_method != "ngram" || vLLM.async_scheduling ==
    "false"` added to `akamas/1-Goodput-Realistic-Load.yaml`.
 
-`spec_method`'s domain is now `[none, ngram, ngram_gpu]` — 3 of the pack's 5
-categories, the other 2 confirmed unusable in this specific environment rather
-than assumed. Two `parameterConstraints` entries (#3, #5) now guard the
-remaining interactions found so far between `spec_method` and
-`optimization_level`/`async_scheduling`.
+`spec_method`'s domain was `[none, ngram, ngram_gpu]` after removing `mtp`/`suffix`
+(#2, #4), with two `parameterConstraints` entries guarding the `optimization_level`
+and `async_scheduling` interactions (#3, #5) — but after 5 distinct crashes in a
+single `optimize` step, all traceable to this one parameter family, the call was
+made to stop patching around individual interactions one at a time.
+
+**Superseding update, 2026-07-17**: `spec_method`/`spec_tokens` and all 4 of their
+`parameterConstraints` entries (both sentinel-gates plus #3 and #5 above) have been
+**removed from this study entirely** — see "Parameters tuned" and "Parameter
+constraints" above. This section is kept as the historical record of *why*, per this
+repo's incident-logging convention (`0-explorative` does the same for its own
+crashes) — not because any of these 5 issues are still live in the current config.
 
 ## Prerequisites still open before this study can be created
 

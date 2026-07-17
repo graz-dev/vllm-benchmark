@@ -43,8 +43,19 @@ spec:
             - "--port=8000"
             - "--host=0.0.0.0"
             - "--enable-mfu-metrics"
+            # NEW 2026-07-17: prefix caching disabled entirely, not just its hash
+            # algorithm — removed prefix_caching_hash_algo from parametersSelection
+            # since we don't care which algorithm, we don't want caching at all for
+            # this study's traffic pattern. Confirmed --no-enable-prefix-caching is
+            # the real flag from vLLM v0.22.0 source (config/cache.py:
+            # enable_prefix_caching: bool = True, standard BooleanOptionalAction CLI
+            # flag) — not guessed. Hardcoded (hash algo choice doesn't matter once
+            # caching itself is off), not tied to any Akamas parameter.
+            - "--no-enable-prefix-caching"
 
-            # --- Tuned (parametersSelection) — same 16 as 0-explorative ---
+            # --- Tuned (parametersSelection) — same 16 as 0-explorative, minus dtype
+            #     and prefix_caching_hash_algo (removed 2026-07-17, see Pinned/hardcoded
+            #     flags below) ---
             - "--gpu-memory-utilization=${vLLM.gpu_memory_utilization}"
             - "--max-num-seqs=${vLLM.max_num_seqs}"
             - "--max-num-batched-tokens=${vLLM.max_num_batched_tokens}"
@@ -53,24 +64,12 @@ spec:
             - "--optimization-level=${vLLM.optimization_level}"
             - "--block-size=${vLLM.block_size}"
             - "--attention-backend=${vLLM.attention_backend}"
-            - "--dtype=${vLLM.dtype}"
             - "--enforce-eager=${vLLM.enforce_eager}"
             - "--scheduling-policy=${vLLM.scheduling_policy}"
-            - "--prefix-caching-hash-algo=${vLLM.prefix_caching_hash_algo}"
             - "--disable-cascade-attn=${vLLM.disable_cascade_attn}"
             - "--tokenizer-mode=${vLLM.tokenizer_mode}"
             - "--async-scheduling=${vLLM.async_scheduling}"
             - "--max-cudagraph-capture-size=${vLLM.max_cudagraph_capture_size}"
-
-            # --- Tuned (parametersSelection) — NEW in pack v1.5.1, genuinely explored
-            #     for the first time in this study (see README "Parameters tuned") ---
-            # apply_config.sh DROPS both of these entirely whenever spec_method
-            # renders as "none" — passing "--spec-method none"/"--spec-tokens 0"
-            # through would crash vLLM at startup (argparse rejects "none" as a
-            # choice; Pydantic rejects spec_tokens=0). Never remove these two
-            # lines without also removing/updating that drop-flag step.
-            - "--spec-method=${vLLM.spec_method}"
-            - "--spec-tokens=${vLLM.spec_tokens}"
 
             # --- Pinned (single A10G, non-MoE model, same reasoning as
             #     0-explorative — see that study's README "Parameters tuned") ---
@@ -79,6 +78,13 @@ spec:
             - "--data-parallel-size=${vLLM.data_parallel_size}"
             - "--enable-expert-parallel=${vLLM.enable_expert_parallel}"
             - "--disable-custom-all-reduce=${vLLM.disable_custom_all_reduce}"
+            # NEW 2026-07-17: dtype pinned, not tuned — it's the model's numeric
+            # precision/quantization, not a goodput lever this study cares about.
+            # Left as the pack's own default ("auto", vLLM auto-selects from the
+            # checkpoint's own dtype) by simply not being in parametersSelection —
+            # this token still renders every trial since it's a real component
+            # parameter, just no longer varied.
+            - "--dtype=${vLLM.dtype}"
             # NEW in pack v1.5.1 — pinned to 1 for the same reason as
             # tensor_parallel_size: context parallelism requires multiple GPUs,
             # this study has one. See knowledge/notes/2026-07-vllm-pack-v1.4.0-

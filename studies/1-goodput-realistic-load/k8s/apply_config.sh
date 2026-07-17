@@ -33,20 +33,12 @@ done
 # value and neither pattern matches.
 sed -i -E '/\$\{vLLM\./d; /^[[:space:]]*-[[:space:]]*"--[A-Za-z0-9_-]+="[[:space:]]*$/d' "$DEPLOY_FILE"
 
-# --- Step 3: drop speculative decoding flags entirely when disabled ---
-# vLLM.spec_method's "none" value (the pack's own default, meaning "speculative decoding
-# off") cannot be passed through to vLLM as a literal --spec-method/--spec-tokens value:
-# argparse rejects "none" as an invalid --spec-method choice, and Pydantic rejects
-# spec_tokens=0 (num_speculative_tokens requires > 0 when set). Both flags must be
-# OMITTED from the command entirely whenever spec_method is "none" — confirmed against
-# vLLM v0.22.0 source, see knowledge/notes/2026-07-vllm-pack-v1.5.0-speculative-decoding-gate-pattern.md
-# and the pack's own README ("Workflow/deployment-template instructions"). This applies
-# to every trial (baseline included, since "none" is also the baseline's own value for
-# this parameter when rendered) — a value-based check, distinct from Step 2's
-# unsubstituted-token check above.
-if grep -q -- '--spec-method=none' "$DEPLOY_FILE"; then
-  sed -i '/--spec-method=none/d; /--spec-tokens=0/d' "$DEPLOY_FILE"
-fi
+# Former Step 3 (drop --spec-method/--spec-tokens when spec_method="none") removed
+# 2026-07-17 along with spec_method/spec_tokens themselves — see
+# akamas/1-Goodput-Realistic-Load.yaml and README's "Incidents found during the
+# optimize step" for why speculative decoding was dropped from this study entirely.
+# The deployment template no longer references either flag at all, so there's
+# nothing left to drop here.
 
 kubectl apply -f "$DEPLOY_FILE" -n llm-serving
 
