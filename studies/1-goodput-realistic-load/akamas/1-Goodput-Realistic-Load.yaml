@@ -29,9 +29,10 @@ windowing:
   # naturally lands near the highest-load stage the server sustains without degrading,
   # i.e. "toward the end of the ramp" without hardcoding that assumption.
   #
-  # width: 7 samples at native/raw resolution (no explicit `resolution` set) — matches
-  # the 7 concurrency levels in the AIPerf sweep (2026-07-17, see README's "Load
-  # generator" section), one sample per level, same alignment philosophy as before.
+  # width: 6 samples at native/raw resolution (no explicit `resolution` set) — matches
+  # the 6 concurrency levels in the AIPerf sweep (2026-07-17, reduced from 7 to 6 and
+  # 60s->300s per level on 2026-07-17 — see README's "Load generator" section), one
+  # sample per level, same alignment philosophy as before.
   #
   # maxStdDev: 300 is a PLACEHOLDER (2026-07-15) sized off 0-explorative's own observed
   # prefill_token_throughput range (~2500-3600 tok/s) — recalibrate once this study's
@@ -48,7 +49,7 @@ windowing:
   type: stability
   stability:
     metric: vLLM.prefill_token_throughput
-    width: 7
+    width: 6
     maxStdDev: 300000000
     when:
       metric: vLLM.prefill_token_throughput

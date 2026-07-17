@@ -107,6 +107,33 @@ in this study) were also removed entirely — see "Incidents found during the op
 step" for the 5 distinct crashes that motivated dropping them rather than continuing
 to patch around each one.
 
+### Considered for tuning and rejected (2026-07-17): partial-prefill params, `num_gpu_blocks_override`
+
+Checked whether `max_num_partial_prefills`, `max_long_partial_prefills`,
+`long_prefill_token_threshold`, and `num_gpu_blocks_override` should move from
+pinned/absent into `parametersSelection`. Decision: no change, all stay as they are.
+
+- The first three already exist in the pack and are already pinned here — see the
+  Pinned table below — because of a **100%-reproducible crash** on this exact
+  vLLM 0.22.0/A10G combo whenever `max_num_partial_prefills > 1`
+  (`NotImplementedError: Concurrent Partial Prefill is not supported`, see
+  `0-explorative`'s "Incident: Concurrent Partial Prefill crash"). Tuning it would
+  fail nearly every experiment; the other two are inert whenever
+  `max_num_partial_prefills` stays at 1, so tuning them alone would spend budget on
+  parameters with no measurable effect. Confirmed the incident's root cause is still
+  current (same vLLM version, not upgraded — see "vLLM version" discussion) before
+  deciding to leave all three untouched.
+- `num_gpu_blocks_override` does **not** exist in the pack. Confirmed against vLLM
+  0.22.0 source (`vllm/config/cache.py`): `int | None = None`, docstring "Used for
+  testing preemption" — not a production sizing knob. When set, it **replaces** the
+  `gpu_memory_utilization`-derived KV-cache block count outright, with no validation
+  against actual free VRAM (`vllm/v1/core/kv_cache_utils.py`'s
+  `get_kv_cache_configs`), and `block_size` is a direct multiplier on the memory
+  footprint per block — real OOM risk if the optimizer picks a value that doesn't
+  fit, compounded by `block_size` already being tuned here. Decided not to add it to
+  the pack or this study — out of scope for a goodput-tuning study, not a testing/
+  preemption study.
+
 ### Baseline rendering — a deliberate change from `0-explorative`
 
 `0-explorative`'s baseline `values:` explicitly restated vLLM's own assumed defaults
@@ -432,7 +459,7 @@ later; not today's problem to solve.)
 
 ### Sizing the concurrency sweep for this specific hardware/model/dataset
 
-`--concurrency 1,2,4,8,16,32,64`, 60s per level (`--benchmark-duration 60`) — sized
+`--concurrency 1,2,4,8,16,32`, 300s per level (`--benchmark-duration 300`) — sized
 from Little's Law (`concurrency ≈ throughput × latency`) using numbers already
 established for this exact stack, not guessed fresh:
 
@@ -451,25 +478,81 @@ established for this exact stack, not guessed fresh:
 - Combined with the ~2.5 req/s prefill-throughput ceiling already derived for the
   rate-based ramp (see "Real bugs" #5): concurrency ≈ 2.5 × 14.5 ≈ **~36**.
 
-7 levels doubling from 1 to 64 brackets this estimate (36 falls between 32 and 64)
-while still covering clearly-light (1-2) and clearly-saturated (64) regimes — same
-placeholder status as every other numeric choice in this README: a reasoned
-starting point from real data, not a final answer, expected to be revisited once
-real per-configuration results are in. `windowing.stability.width` was bumped from
-6 to 7 to match (one sample per concurrency level, same alignment philosophy as
-the old rate-based ramp).
+Originally 7 levels doubling from 1 to 64 (bracketing the ~36 estimate between 32
+and 64). Changed 2026-07-17 (explicit user request) to 6 levels capped at 32 and
+300s/level instead of 60s/level — a deliberate tradeoff: each level now gets 5x
+longer to reach a stable window (this study's `windowing.stability` scans for a
+stable interval per level, so more samples per level is directly useful), at the
+cost of no longer bracketing the ~36 estimate from above (32 is now the top level,
+below the estimated saturation concurrency, not past it). Total sweep time:
+6 x 300s = 30 min, plus a one-time ~5 min ShareGPT dataset-validation pass on the
+very first Akamas trial ever (see "Token length cap on ShareGPT" below) — ~35 min
+first run, ~30 min every run after. `windowing.stability.width` was changed from
+7 to 6 to match (one sample per concurrency level, same alignment philosophy as
+the old rate-based ramp). Same placeholder status as every other numeric choice in
+this README: expected to be revisited once real per-configuration results are in.
+
+### Token length cap on ShareGPT (2026-07-17) — built-in, not a config choice
+
+The AWS SageMaker blog referenced when this study switched load generators (see
+"Why switch" above) caps its prompt/output token lengths explicitly, via
+synthetic `mean`/`stddev` overrides. AIPerf's real ShareGPT loader takes a
+different approach, confirmed by reading its source directly (`aiperf==0.11.0`,
+`src/aiperf/dataset/loader/base_public_dataset.py` and `sharegpt.py`, plus a full
+repo-wide grep to rule out any CLI/config override elsewhere): every conversation
+is validated against **hardcoded** bounds — `min_seq_len=4`, `max_prompt_len=1024`,
+`max_total_len=2048` (prompt + output tokens combined) — adopted directly from
+vLLM's own `benchmarks/benchmark_dataset.py`. Conversations outside these bounds
+are silently skipped, not truncated. Neither `ShareGPTLoader` nor any CLI flag in
+this codebase exposes these three numbers as configurable — there is no
+`--dataset-filter` or `--max-prompt-len` equivalent for the public ShareGPT
+loader, so there's nothing to add on top: AIPerf already imposes a length cap by
+construction whenever `--public-dataset sharegpt` is used, no config change needed
+or possible here.
+
+Practical consequence for the sizing above: the ~1400-1600 token prompt mean
+(P90 ~2200-2350) used in the Little's Law estimate came from `inference-perf`'s
+*unfiltered* ShareGPT sampling — well above AIPerf's 1024-token prompt cap. With
+AIPerf, every prompt actually sent will be ≤1024 tokens, so the real effective
+mean will be lower and per-request latency likely somewhat below the ~14.5s
+estimate above. Not re-deriving the concurrency list over this: the chosen range
+(1-64) is wide enough to still bracket the true saturation point regardless, but
+flagging this so the ~36 figure isn't read as more precise than it is once real
+run data is available.
 
 ### What's simpler now
 
-No dataset-prep pipeline (`06-sharegpt-dataset-pvc.yaml` /
-`07-sharegpt-prep-job.yaml` are gone) — AIPerf downloads and caches ShareGPT
-itself (`--public-dataset sharegpt`), confirmed against its own docs and a real
-tutorial run showing genuinely variable output lengths (142-245 tokens) without
-any synthetic-length override. A plain `hf-cache` PVC (`06-hf-cache-pvc.yaml`,
-mounted at `/root/.cache/huggingface`) persists that cache across trials, same
-re-download-avoidance goal as before with far less custom machinery. No
-monkey-patch (`08-inference-perf-patch.yaml` is gone) — none of `inference-perf`'s
-bugs apply to a different tool.
+No separate dataset-prep Job (`06-sharegpt-dataset-pvc.yaml` /
+`07-sharegpt-prep-job.yaml` are gone) — AIPerf downloads and caches the raw
+ShareGPT file itself (`--public-dataset sharegpt`), confirmed against its own
+docs and a real tutorial run showing genuinely variable output lengths (142-245
+tokens) without any synthetic-length override. A plain `hf-cache` PVC
+(`06-hf-cache-pvc.yaml`, mounted at `/root/.cache/huggingface`) persists that
+raw-file cache across trials, same re-download-avoidance goal as before with far
+less custom machinery. No monkey-patch (`08-inference-perf-patch.yaml` is gone) —
+none of `inference-perf`'s bugs apply to a different tool.
+
+Correction to that claim, found 2026-07-17 during the manual cluster test below:
+caching the raw ShareGPT *file* isn't the expensive part. **Validating and
+tokenizing** its 73,499 conversations against the live tokenizer is — confirmed
+from a real run's logs, ~4-5 minutes, and it reruns in full for *every*
+concurrency level, because AIPerf starts a fresh `AIPerfSystem` per level and the
+`ShareGPTLoader` always re-validates the entire dataset regardless of how much of
+it a given level actually uses. Visibly, this is the stall/drop between every
+step of the ramp in Grafana the manual test surfaced. So a lightweight prep step
+*is* back, just not the old one: `05-job.yaml` now runs a throwaway
+`aiperf profile` pass (`--concurrency 1 --benchmark-duration 1`) once to produce
+AIPerf's own `inputs.json` (confirmed via source —
+`dataset_manager.py`'s `_generate_input_payloads()` dumps the *entire* loaded/
+validated dataset, not just whatever got sent during that throwaway pass), caches
+it at `/benchmarks/sharegpt-cache/inputs.json` on the existing `aiperf-results`
+PVC (so it also survives across Akamas trials, not just across the 7 levels of
+one trial), and the real 7-level sweep then loads it back with
+`--input-file .../inputs.json --custom-dataset-type inputs_json` — a real,
+registered AIPerf loader (`aiperf/plugin/plugins.yaml`'s
+`custom_dataset_loader.inputs_json` entry) that replays payloads verbatim with no
+re-tokenization/re-validation pass. Net effect: the ~4-5 minute validation cost
+now happens once ever (first Akamas trial only), not 7 times per trial.
 
 One thing carried over unchanged: AIPerf's `--tokenizer` also defaults to
 `--model-names`, and `qwen2.5-7b` (vLLM's served name) isn't a valid HF repo id for
