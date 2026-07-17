@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: inference-perf-benchmark
+  name: aiperf-benchmark
   namespace: llm-benchmark
 spec:
   # Do not retry on failure — a failed benchmark should be inspected, not silently retried.
@@ -29,17 +29,35 @@ spec:
               echo "vLLM is ready."
 
       containers:
-        # Real image + command confirmed against kubernetes-sigs/inference-perf's own
-        # deploy/manifests.yaml (2026-07-15) — quay.io/inference-perf, not guessed.
-        - name: inference-perf
-          image: quay.io/inference-perf/inference-perf:latest
-          imagePullPolicy: Always
-          # NOT the bare `inference-perf` CLI entrypoint — runs a small wrapper
-          # (08-inference-perf-patch.yaml) that monkey-patches a real upstream bug
-          # in get_chat_data before calling inference-perf's own main_cli() with
-          # these same args. See that file for the full root-cause writeup.
-          command: ["python3", "/patch/patched_entrypoint.py"]
-          args: ["--config_file", "/etc/config/config.yml"]
+        # NVIDIA AIPerf (ai-dynamo/aiperf) replaces kubernetes-sigs/inference-perf
+        # 2026-07-17 — see README's "Load generator" section for the full reasoning
+        # (inference-perf's open-loop rate model caused unbounded queue growth near
+        # saturation; AIPerf's closed-loop --concurrency model is self-limiting).
+        #
+        # No official prebuilt container image found (checked ghcr.io/ai-dynamo,
+        # the repo's own Dockerfile is unpublished-image source only) — AIPerf ships
+        # as a PyPI package (confirmed: pypi.org/project/aiperf, requires-python
+        # <3.14,>=3.10), so this installs it into a plain python:3.12-slim base at
+        # container start, version-pinned for reproducibility.
+        - name: aiperf
+          image: python:3.12-slim
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              pip install --quiet aiperf==0.11.0
+              aiperf profile \
+                --model qwen2.5-7b \
+                --tokenizer Qwen/Qwen2.5-7B-Instruct \
+                --url http://vllm.llm-serving.svc.cluster.local:8000 \
+                --endpoint-type chat \
+                --streaming \
+                --public-dataset sharegpt \
+                --concurrency 1,2,4,8,16,32,64 \
+                --benchmark-duration 60 \
+                --goodput "time_to_first_token:1500 inter_token_latency:300" \
+                --ui simple \
+                --output-artifact-dir "/benchmarks/aiperf-$(date +%s)"
           env:
             - name: HF_TOKEN
               valueFrom:
@@ -55,37 +73,19 @@ spec:
               cpu: "4"
               memory: "8Gi"
           volumeMounts:
-            - name: config-volume
-              mountPath: /etc/config
-              readOnly: true
             - name: results
               mountPath: /benchmarks
-            - name: sharegpt-dataset
-              mountPath: /data/sharegpt
-              readOnly: true   # prepared once by 07-sharegpt-prep-job.yaml; this
-                                # job only ever reads it (see 04-inference-perf-config.yaml's
-                                # data.path) — avoids re-downloading ~670MB on every
-                                # single trial, independent of the patch below
-            - name: patch
-              mountPath: /patch
-              readOnly: true
+            - name: hf-cache
+              mountPath: /root/.cache/huggingface
+              # read-write (not read-only like the old sharegpt-dataset mount) —
+              # AIPerf manages its own cache population/invalidation here, unlike
+              # inference-perf which needed a separate prep job because of its own
+              # dataset-loading bug (see README).
 
       volumes:
-        - name: config-volume
-          configMap:
-            name: inference-perf-config
-        - name: patch
-          configMap:
-            name: inference-perf-patch
         - name: results
           persistentVolumeClaim:
-            claimName: inference-perf-results   # NOT guidellm-results — this study
-                                                 # reuses 0-explorative's cluster/
-                                                 # namespace, and that name already
-                                                 # exists there; reusing it would mix
-                                                 # this study's results into
-                                                 # 0-explorative's old PVC instead of
-                                                 # a fresh volume (see 00-pvc.yaml)
-        - name: sharegpt-dataset
+            claimName: aiperf-results
+        - name: hf-cache
           persistentVolumeClaim:
-            claimName: sharegpt-dataset
+            claimName: hf-cache

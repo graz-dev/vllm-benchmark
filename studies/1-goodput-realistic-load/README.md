@@ -18,11 +18,13 @@ hardware confound.
 Three deliberate changes from `0-explorative`, all in service of the same goal
 (a more realistic, latency-aware measurement of this hardware's actual ceiling):
 
-1. **Load generator**: `kubernetes-sigs/inference-perf` instead of GuideLLM, replaying
-   the real ShareGPT dataset (multi-turn conversations) instead of GuideLLM's synthetic
-   fixed `prompt_tokens=512,output_tokens=128` shape.
-2. **Load pattern**: a linear sweep ("ramp") from low load toward this server's own
-   saturation point (6 stages × 60s), not a single fixed-rate throughput-seeking
+1. **Load generator**: NVIDIA AIPerf (`ai-dynamo/aiperf`) — replacing GuideLLM's
+   synthetic fixed `prompt_tokens=512,output_tokens=128` shape with real ShareGPT
+   replay (multi-turn conversations, natural variable lengths). Originally built on
+   `kubernetes-sigs/inference-perf`, swapped for AIPerf 2026-07-17 — see "Load
+   generator" below and "Incidents found during the optimize step" for why.
+2. **Load pattern**: a **concurrency sweep** (7 levels, 1→64, closed-loop) toward this
+   server's own saturation point, not a single fixed-rate throughput-seeking
    benchmark — this directly surfaces *where* the latency SLA starts being violated,
    which is exactly the goodput ceiling this study is trying to find.
 3. **Parameter surface**: `0-explorative`'s 16 tuned parameters minus `dtype` and
@@ -50,20 +52,23 @@ Three deliberate changes from `0-explorative`, all in service of the same goal
   `infra/README.md`). This study still has its own full `infra/` copy per this repo's
   atomic-per-study convention, but `infra/eks/provision.sh` will detect the cluster
   already exists and skip creation.
-- **Load generator:** `kubernetes-sigs/inference-perf`
-  (`quay.io/inference-perf/inference-perf:latest`), `data.type: shareGPT` with an
-  explicit `data.path` pointing at a locally-prepared, cleaned copy of
-  `anon8231489123/ShareGPT_Vicuna_unfiltered` (not the tool's own auto-download —
-  see "Real bugs hit and fixed" below), `load` as 6 explicit stages of increasing
-  rate (0.2 to 2.5 req/s, 60s each), not `load.sweep`'s automatic saturation-point
-  discovery — see `k8s/04-inference-perf-config.yaml`. `api.streaming: true` is
-  required for TTFT/ITL/TPOT metrics at all; `x-slo-ttft-ms`/`x-slo-tpot-ms`
-  headers give the tool's own report a native `goodput_metrics` block alongside
-  Akamas' own `goal.constraints` enforcement.
+- **Load generator:** NVIDIA AIPerf (`ai-dynamo/aiperf`, PyPI `aiperf==0.11.0` — no
+  official container image found, installed via `pip` into a plain `python:3.12-slim`
+  base at container start, see `k8s/05-job.yaml`), `--public-dataset sharegpt`
+  (AIPerf downloads/caches ShareGPT from HuggingFace itself, real variable-length
+  prompts and outputs — no custom dataset-prep pipeline needed, unlike the tool it
+  replaces), `--tokenizer Qwen/Qwen2.5-7B-Instruct` (required explicitly — `--model`
+  is the *served* name `qwen2.5-7b`, which isn't a valid HF repo id for tokenizer
+  lookup; same class of issue the old load generator had), `--concurrency
+  1,2,4,8,16,32,64` (closed-loop sweep, 60s per level via `--benchmark-duration 60`),
+  `--goodput "time_to_first_token:1500 inter_token_latency:300"` (mirrors
+  `goal.constraints` in the tool's own report). See "Load generator" below for the
+  full sizing rationale and why this replaced `kubernetes-sigs/inference-perf`.
 - **Telemetry:** Prometheus (same instance/metric catalog as `0-explorative` —
   `kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090`,
-  `duration: 30`, `logLevel: DETAILED`). Unaffected by the load-generator switch —
-  Akamas reads vLLM's own `/metrics` directly, not inference-perf's report files.
+  `duration: 30`, `logLevel: DETAILED`). Unaffected by the load-generator swap —
+  Akamas reads vLLM's own `/metrics` directly, not the load generator's own report
+  files, regardless of which tool is driving traffic.
 
 ## Parameters tuned
 
@@ -236,18 +241,18 @@ per that incident's own root cause — not relevant here.)
 
 `0-explorative`'s single fixed-rate load converges to one steady state, so a `trim`
 window (cut a fixed amount off the head/tail) had an obvious, principled cut point.
-This study's load is a **sweep/ramp** (6 stages × 60s, increasing rate) — there is no
-single steady state to trim around, so `windowing.type: stability` is used instead:
-scan for a temporally stable interval, then, among the stable candidates, pick the one
-where a chosen metric is maximized.
+This study's load is a **sweep** (7 concurrency levels, 1→64, closed-loop — see
+"Load generator" below) — there is no single steady state to trim around, so
+`windowing.type: stability` is used instead: scan for a temporally stable interval,
+then, among the stable candidates, pick the one where a chosen metric is maximized.
 
 ```yaml
 windowing:
   type: stability
   stability:
     metric: vLLM.prefill_token_throughput
-    width: 8
-    maxStdDev: 300
+    width: 7
+    maxStdDev: 300000000
     when:
       metric: vLLM.prefill_token_throughput
       is: max
@@ -267,21 +272,21 @@ values while vLLM is actually serving load, not during the deploy tasks.
   check and the `when: max` comparison) — a single-metric pattern, not the
   two-metric split (a separate "has it settled" indicator plus a separate "which one is
   best" comparison) considered earlier. `when: max` naturally favors the highest-
-  throughput stable interval, which for a monotonic ramp lands near the highest-load
-  stage the server sustains without degrading — i.e. "toward the end of the ramp"
-  without hardcoding that assumption, and without penalizing an earlier degradation if
-  one occurs.
-- **`width: 8`** samples, native/raw resolution (no explicit `resolution` set, so
-  Akamas uses the trial's own underlying data-point granularity rather than an
-  aggregated bucket size).
-- **`maxStdDev: 300`** is a placeholder sized off `0-explorative`'s own observed
-  `prefill_token_throughput` range (~2500-3600 tok/s), not derived from this study's own
-  data (which doesn't exist yet). Recalibrate once the baseline and first sweep trials
-  report real numbers — same caveat as the latency thresholds below. A much larger
-  value (e.g. 1e9) would never reject any window as unstable at this metric's scale,
-  reducing the mechanism to "just pick the highest-throughput window" with no real
-  stability requirement — that's a valid choice too if a genuine flatness requirement
-  turns out not to matter, but isn't the intent here until proven otherwise.
+  throughput stable interval, which for a monotonic load sweep lands near the
+  highest-load level the server sustains without degrading — i.e. "toward the top of
+  the sweep" without hardcoding that assumption, and without penalizing an earlier
+  degradation if one occurs.
+- **`width: 7`** samples, native/raw resolution (no explicit `resolution` set) —
+  matches the 7 concurrency levels in the AIPerf sweep, one sample per level (bumped
+  from 6 to 7 on 2026-07-17 when the load generator switched from a 6-stage rate
+  ramp to a 7-level concurrency sweep — see "Load generator" below).
+- **`maxStdDev: 300000000`** — set by hand 2026-07-17, effectively a no-op at this
+  metric's scale (real `prefill_token_throughput` values run in the thousands, not
+  hundreds of millions), reducing the mechanism to "pick the highest-throughput
+  window among the samples" with no real stability requirement. That's a deliberate
+  choice here, not an oversight — flagged in case it should be tightened once this
+  study's own baseline/sweep data is in and a genuine flatness requirement turns out
+  to matter.
 
 ## Latency SLA thresholds — flagged as a starting point, not final
 
@@ -295,13 +300,22 @@ methodology whose whole point is to overload the server, producing huge queueing
 delays. They are not a meaningful reference for a latency-bounded SLA. This study's
 own ramp-based load pattern (ramping from low load toward saturation) will produce
 genuinely comparable data — expect to revisit both thresholds again once the
-baseline and first few ramp-driven trials under the recalibrated 0.2-2.5 req/s
-range report real numbers, and record whatever change is made here. The same
-values are mirrored in `k8s/04-inference-perf-config.yaml`'s `x-slo-ttft-ms`/
-`x-slo-tpot-ms` headers, kept in sync since they tell the same SLO story from two
-independent places (Akamas' own enforcement vs. inference-perf's own report).
+baseline and first few sweep-driven trials under the current 7-level concurrency
+sweep report real numbers, and record whatever change is made here. The same
+values are mirrored in `k8s/05-job.yaml`'s `--goodput
+"time_to_first_token:1500 inter_token_latency:300"` flag, kept in sync since they
+tell the same SLO story from two independent places (Akamas' own enforcement vs.
+the load generator's own report).
 
-## Real bugs hit and fixed getting this study's load test running (2026-07-16)
+## Real bugs hit and fixed getting this study's load test running (2026-07-16) — inference-perf era, superseded
+
+**This whole section describes `kubernetes-sigs/inference-perf`, which this study
+no longer uses** (replaced by NVIDIA AIPerf, 2026-07-17 — see "Load generator"
+below). Kept as historical record, same convention as `0-explorative`'s own
+incident log — not because any of these bugs are still live in the current setup.
+`k8s/04-inference-perf-config.yaml`, `07-sharegpt-prep-job.yaml`, and
+`08-inference-perf-patch.yaml`, referenced throughout this section, have all been
+deleted from the repo.
 
 Three independent, real bugs in `kubernetes-sigs/inference-perf` itself (not
 config mistakes on our side), found by actually running the baseline and reading
@@ -384,6 +398,83 @@ per-trial cost that's actually survivable.
    **Fix**: rate range revised to **0.2-2.5 req/s** — 4000/1500 ≈ 2.6 req/s as a
    rough prefill-only ceiling, with headroom cut for decode work competing on the
    same GPU/KV-cache. Still a placeholder pending this range's own baseline data.
+
+## Load generator: `inference-perf` → NVIDIA AIPerf (2026-07-17)
+
+### Why switch
+
+Beyond the 5 real bugs in the section above, `inference-perf`'s fundamental load
+model was the wrong shape for this study's actual goal. It's **open-loop,
+rate-based**: new requests are issued at a fixed rate regardless of whether the
+server has finished previous ones. Once the offered rate exceeds the server's real
+capacity, the request queue grows **without bound** — this is exactly what made
+stage durations balloon from a nominal 60s to 40+ minutes near saturation (see
+"Real bugs" #3/#5 above), forcing repeated manual rate-range recalibration
+(1-20 → 0.2-2.5 req/s) with no principled way to know the right ceiling in advance
+for a config Akamas hasn't tested yet.
+
+NVIDIA AIPerf supports a **closed-loop, concurrency-based** model instead: N
+"virtual users," each waiting for its previous request to fully complete before
+sending the next. This is self-limiting by construction — a slow/saturated config
+just shows higher latency per request, but the total wall-clock time for a
+time-boxed run stays bounded regardless of how far past capacity the concurrency
+level is. No more guessing a rate ceiling that varies per vLLM configuration.
+
+(A tempting alternative was AIPerf's own `max-goodput-under-slo` search recipe — a
+built-in Bayesian search over concurrency that directly optimizes the same
+"goodput under TTFT/TPOT/E2E SLOs" objective this study's `goal` already encodes.
+Not used here: its search doesn't sweep concurrency monotonically, which would
+break this study's `windowing` (built on the assumption of a roughly ordered load
+progression), and using its result as the score would mean teaching Akamas to read
+AIPerf's own `search_history.json` instead of vLLM's raw Prometheus metrics — a
+bigger architectural change than swapping the load generator. Worth revisiting
+later; not today's problem to solve.)
+
+### Sizing the concurrency sweep for this specific hardware/model/dataset
+
+`--concurrency 1,2,4,8,16,32,64`, 60s per level (`--benchmark-duration 60`) — sized
+from Little's Law (`concurrency ≈ throughput × latency`) using numbers already
+established for this exact stack, not guessed fresh:
+
+- **GPU**: single NVIDIA A10G (24GB), serving Qwen2.5-7B-Instruct in bf16 (14.19 GiB
+  weights, confirmed from a real deployment's own logs).
+- **Dataset**: real ShareGPT prompts average ~1400-1600 tokens (P90 ~2200-2350);
+  real generated outputs average ~283 tokens (P50 249, P90 553 — from the
+  single-stage smoke test in "Real bugs" #4 above, the only clean per-request
+  length sample this study has taken so far).
+- **Observed peak `prefill_token_throughput`** on this A10G: ~4000 tok/s.
+- At **light load**, estimated per-request latency ≈ TTFT + decode time:
+  - TTFT ≈ 1500 tokens / 4000 tok/s ≈ 0.36s (best-case, uncontended prefill).
+  - Decode ≈ 283 tokens × ~50ms/token (roughly the lowest-load TPOT this study
+    observed pre-saturation) ≈ 14.2s.
+  - Total ≈ **~14.5s** per request, unsaturated.
+- Combined with the ~2.5 req/s prefill-throughput ceiling already derived for the
+  rate-based ramp (see "Real bugs" #5): concurrency ≈ 2.5 × 14.5 ≈ **~36**.
+
+7 levels doubling from 1 to 64 brackets this estimate (36 falls between 32 and 64)
+while still covering clearly-light (1-2) and clearly-saturated (64) regimes — same
+placeholder status as every other numeric choice in this README: a reasoned
+starting point from real data, not a final answer, expected to be revisited once
+real per-configuration results are in. `windowing.stability.width` was bumped from
+6 to 7 to match (one sample per concurrency level, same alignment philosophy as
+the old rate-based ramp).
+
+### What's simpler now
+
+No dataset-prep pipeline (`06-sharegpt-dataset-pvc.yaml` /
+`07-sharegpt-prep-job.yaml` are gone) — AIPerf downloads and caches ShareGPT
+itself (`--public-dataset sharegpt`), confirmed against its own docs and a real
+tutorial run showing genuinely variable output lengths (142-245 tokens) without
+any synthetic-length override. A plain `hf-cache` PVC (`06-hf-cache-pvc.yaml`,
+mounted at `/root/.cache/huggingface`) persists that cache across trials, same
+re-download-avoidance goal as before with far less custom machinery. No
+monkey-patch (`08-inference-perf-patch.yaml` is gone) — none of `inference-perf`'s
+bugs apply to a different tool.
+
+One thing carried over unchanged: AIPerf's `--tokenizer` also defaults to
+`--model-names`, and `qwen2.5-7b` (vLLM's served name) isn't a valid HF repo id for
+tokenizer lookup — same class of issue `inference-perf` had (see "Real bugs"
+above), fixed the same way: `--tokenizer Qwen/Qwen2.5-7B-Instruct` set explicitly.
 
 ## Incidents found during the `optimize` step (2026-07-16)
 
@@ -480,10 +571,12 @@ crashes) — not because any of these 5 issues are still live in the current con
    `/work/vllm-benchmark/studies/1-goodput-realistic-load/akamas/id_rsa` on the actual
    `toolbox` host the workflow's tasks run against, since that path is what the
    workflow YAML references, not this git checkout.
-3. **Verify `inference-perf`'s exact behavior end-to-end at least once manually**
-   before trusting it inside an Akamas experiment loop — this tool has not been used
-   in this repo before (per `ROADMAP.md` Q2's now-resolved recommendation to commit
-   to it directly rather than run a side-by-side validation study first). Still open.
+3. ~~Verify `inference-perf`'s exact behavior end-to-end at least once manually~~ —
+   moot, `inference-perf` has been replaced by AIPerf (2026-07-17, see "Load
+   generator"). **Verify AIPerf's exact behavior end-to-end at least once manually**
+   before trusting it inside an Akamas experiment loop instead — neither tool has a
+   track record in this repo, so the same caution applies to the replacement. Still
+   open.
 
 ## How to run
 
