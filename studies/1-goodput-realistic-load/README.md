@@ -431,10 +431,23 @@ partially avoidable in advance, unlike ordinary resource-contention noise.
    any parameter combination. **Fixed 2026-07-16**: removed `suffix` from
    `vLLM.spec_method`'s categories alongside `mtp` — same reasoning as #2, a
    categorical failure with no parameter combination that avoids it.
+5. **`spec_method=ngram` + `async_scheduling=true` rejected by vLLM's own config
+   validation** (experiment 16) — fails even earlier than #3/#4, at Pydantic
+   config-construction time, before engine-core start:
+   `ValidationError: Currently, async scheduling is only supported with
+   EAGLE/MTP/Draft Model/NGram GPU kind of speculative decoding`. Note this is
+   **"NGram GPU" specifically, not plain "ngram"** (CPU-based) — the two are
+   different pack categories, and only the GPU variant is on vLLM's own
+   supported-with-async-scheduling list. Same class of interaction as #3 (two
+   parameters, not one broken value), so fixable the same way. **Fixed
+   2026-07-16**: `vLLM.spec_method != "ngram" || vLLM.async_scheduling ==
+   "false"` added to `akamas/1-Goodput-Realistic-Load.yaml`.
 
 `spec_method`'s domain is now `[none, ngram, ngram_gpu]` — 3 of the pack's 5
 categories, the other 2 confirmed unusable in this specific environment rather
-than assumed.
+than assumed. Two `parameterConstraints` entries (#3, #5) now guard the
+remaining interactions found so far between `spec_method` and
+`optimization_level`/`async_scheduling`.
 
 ## Prerequisites still open before this study can be created
 

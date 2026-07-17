@@ -146,6 +146,18 @@ parameterConstraints:
   - name: ngram_gpu speculative decoding requires a compilation backend (optimization_level=0 disables it)
     formula: vLLM.spec_method != "ngram_gpu" || vLLM.optimization_level != 0
 
+  # --- NEW 2026-07-16: confirmed from a real crash (experiment 16) ---
+  # vLLM's own VllmConfig validation rejects async_scheduling=true paired with plain
+  # "ngram" speculative decoding: "Currently, async scheduling is only supported with
+  # EAGLE/MTP/Draft Model/NGram GPU kind of speculative decoding" — note this is
+  # "NGram GPU" specifically, not plain "ngram" (CPU-based), which is what this study
+  # tunes alongside "ngram_gpu". Fails at Pydantic config-construction time, before
+  # engine-core even starts — deterministic, same class of interaction as the
+  # ngram_gpu/optimization_level constraint above. See README's "Incidents found
+  # during the optimize step" for the full traceback.
+  - name: async scheduling is incompatible with plain ngram speculative decoding
+    formula: vLLM.spec_method != "ngram" || vLLM.async_scheduling == "false"
+
 steps:
   - name: baseline
     type: baseline
