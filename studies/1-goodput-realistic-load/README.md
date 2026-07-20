@@ -459,9 +459,9 @@ later; not today's problem to solve.)
 
 ### Sizing the concurrency sweep for this specific hardware/model/dataset
 
-`--concurrency 16,32,48,72,108,150` (bumped from `16,32,48,64,80,96` 2026-07-20 —
-see "Windowing still lands on the last rung" below), 300s per level
-(`--benchmark-duration 300`).
+`--concurrency 16,48,96,160,250,380` (bumped twice on 2026-07-20, from
+`16,32,48,64,80,96` → `16,32,48,72,108,150` → this — see "Windowing still lands
+on the last rung" below), 300s per level (`--benchmark-duration 300`).
 
 **History**: originally sized from Little's Law (`concurrency ≈ throughput ×
 latency`), landing on `1,2,4,8,16,32,64` (~36 estimated saturation point,
@@ -561,10 +561,38 @@ artifact files" below) into Akamas as an additional signal.
 **Interim, partial mitigation applied 2026-07-20**: bumped the sweep to
 `16,32,48,72,108,150` (same 6 levels, ~1.5x steps from 48 up instead of +16
 fixed) — a moderate push, explicitly expected to still land near the top rung
-for at least some tuned configs, not a fix for the root cause above. Chosen
-over an aggressive 300+ ceiling to keep the sweep at 6 levels without
-first re-validating a wider range; revisit if `windowing` still pins to 150
-once real trial data comes in.
+for at least some tuned configs, not a fix for the root cause above.
+
+**Confirmed too low, with real data**: once the actual baseline trial ran on
+this list, pulled the real `prefill_token_throughput`/TTFT P95/ITL avg directly
+from Prometheus (300s-averaged per level, not a quick burst — see the table
+below) instead of guessing again:
+
+| Concurrency | Prefill throughput | TTFT P95 | ITL avg |
+|---|---|---|---|
+| 16 | 197 | 349ms | 36ms |
+| 32 | 292 | 309ms | 53ms |
+| 48 | 372 | 440ms | 39ms |
+| 72 | 449 | 495ms | 48ms |
+| 108 | 517 | 632ms | 62ms |
+| 150 | 556 | 691ms | 74ms |
+
+Even at 150, TTFT P95 (691ms) is under half the 1500ms SLA and ITL (74ms) is
+nowhere near its 300ms limit — throughput is still climbing with no sign of a
+knee. This is a **much gentler curve** than the earlier `64,96,128,192,256,384`
+exploration suggested (that pass showed TTFT P90 already at ~1517ms *at*
+concurrency 64) — likely because that exploration used 60s bursts with very
+high relative variance (e.g. TTFT std 358ms on a 301ms mean at concurrency 64),
+so its percentile estimates were noisy; this 300s-averaged, real-trial data is
+far more reliable. Extrapolating the ~3-4ms-per-concurrency-unit TTFT growth
+rate seen in the 72-150 range, the SLA edge (1500ms) is more likely around
+concurrency 350-400, not 150.
+
+**Bumped again 2026-07-20 to `16,48,96,160,250,380`** (same 6 levels, wider
+steps given the confirmed-much-higher true knee) — still not a fix for the
+windowing-metric gap above, just a better-informed guess at where the SLA
+boundary actually sits for this config. Revisit again once real trial data
+comes in for this list too.
 
 ### AIPerf artifact files: what's kept and why (2026-07-20)
 
