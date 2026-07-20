@@ -47,6 +47,20 @@ spec:
               set -e
               pip install --quiet aiperf==0.11.0
 
+              # 2026-07-20: wipe every previous run's output before starting this one.
+              # Confirmed the hard way: the aiperf-results PVC (10Gi) filled up
+              # completely after ~26 Akamas trials and started failing every
+              # experiment with "OSError: [Errno 28] No space left on device" — each
+              # run writes ~370MB, ~90% of which
+              # (concurrency_*/inputs.json x6, ~56MB each) is a byte-for-byte
+              # redundant copy of the SAME cached dataset already sitting at
+              # sharegpt-cache/inputs.json. Akamas never reads any of this (it scores
+              # from Prometheus, not these files), so nothing here needs to survive
+              # past the run that produced it. Only sharegpt-cache/ is spared (name
+              # doesn't match aiperf-*) — that's the one thing worth keeping across
+              # trials, see the dataset-validation caching note below.
+              find /benchmarks -mindepth 1 -maxdepth 1 -name 'aiperf-*' -exec rm -rf {} +
+
               # 2026-07-17: without this, each of the concurrency levels below
               # re-downloads/re-tokenizes/re-validates the FULL 73k-conversation
               # ShareGPT dataset from scratch (~4-5 min each, confirmed from a real
@@ -116,7 +130,7 @@ spec:
                 --streaming \
                 --input-file "$CACHE_FILE" \
                 --custom-dataset-type inputs_json \
-                --concurrency 16,32,48,64,80,96 \
+                --concurrency 16,32,48,72,108,150 \
                 --benchmark-duration 300 \
                 --goodput "time_to_first_token:1500 inter_token_latency:300" \
                 --ui simple \

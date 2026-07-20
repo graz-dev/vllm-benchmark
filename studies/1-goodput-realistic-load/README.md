@@ -459,7 +459,9 @@ later; not today's problem to solve.)
 
 ### Sizing the concurrency sweep for this specific hardware/model/dataset
 
-`--concurrency 16,32,48,64,80,96`, 300s per level (`--benchmark-duration 300`).
+`--concurrency 16,32,48,72,108,150` (bumped from `16,32,48,64,80,96` 2026-07-20 —
+see "Windowing still lands on the last rung" below), 300s per level
+(`--benchmark-duration 300`).
 
 **History**: originally sized from Little's Law (`concurrency ≈ throughput ×
 latency`), landing on `1,2,4,8,16,32,64` (~36 estimated saturation point,
@@ -520,6 +522,84 @@ cap on ShareGPT" below) — ~35 min first run, ~30 min every run after.
 `windowing.stability.width` stays at 6 (one sample per concurrency level, same
 alignment philosophy as the old rate-based ramp) — unchanged since the level
 *count* didn't change, only the concurrency values.
+
+### Windowing still lands on the last rung even on `16,32,48,64,80,96` (2026-07-20)
+
+Once real Akamas trials ran against the list above (both `baseline` and
+`optimize`-step experiments), `windowing.stability` kept selecting the *last*
+level (96) as the max-throughput stable window — the exact problem the list
+above was sized to avoid, still happening. Root-caused by reading Akamas' own
+live docs (`windowing-strategy.md`, `goal-and-constraints.md`), not guessed:
+
+> stability windowing "discard[s] temporal intervals in which a given metric is
+> not stable and selects the temporal interval in which a metric is maximized or
+> minimized" — and constraint metrics are "aggregated by default by average"
+> over that **same already-selected** window.
+
+I.e. `windowing.stability` picks the window by maximizing `prefill_token_throughput`
+alone — it has no awareness of `goal.constraints.absolute` (TTFT/ITL P95) at
+selection time; constraints are only checked *afterward*, against whichever
+window got picked. This matters because **raw prefill throughput doesn't peak
+where SLA breaks** — our own exploration data (the `64,96,128,192,256,384` first
+pass above) shows AIPerf's own `goodput` (SLA-compliant req/s) collapsing from
+5.3 to 0.52 between 128 and 384, while raw output token throughput was still
+~842 tok/s at 192, only really cratering by 384. Raw throughput and SLA-compliant
+throughput peak at very different concurrency levels — so no matter how the
+concurrency list is chosen, `windowing.stability` will keep sliding to the top
+rung as long as raw throughput is still climbing there, which based on the data
+above is likely somewhere past 250-350 for the baseline config, deep into
+already-broken-latency territory.
+
+**Not fixed today** — this is a real architectural gap (windowing metric ≠
+SLA-aware metric), flagged for a future look, not resolved by a bigger
+concurrency list alone. Candidate fixes considered but not implemented:
+changing what `windowing.stability.metric` targets, or feeding AIPerf's own
+per-level `goodput`/`good_request_fraction` (already computed and written to
+each run's `sweep_aggregate/profile_export_aiperf_sweep.json` — see "AIPerf
+artifact files" below) into Akamas as an additional signal.
+
+**Interim, partial mitigation applied 2026-07-20**: bumped the sweep to
+`16,32,48,72,108,150` (same 6 levels, ~1.5x steps from 48 up instead of +16
+fixed) — a moderate push, explicitly expected to still land near the top rung
+for at least some tuned configs, not a fix for the root cause above. Chosen
+over an aggressive 300+ ceiling to keep the sweep at 6 levels without
+first re-validating a wider range; revisit if `windowing` still pins to 150
+once real trial data comes in.
+
+### AIPerf artifact files: what's kept and why (2026-07-20)
+
+Each `aiperf-<timestamp>/` run directory was consuming **~370MB** — with
+`numberOfExperiments: 1000` in the `optimize` step, that's ~370GB over a full
+study, and the 10Gi `aiperf-results` PVC actually filled completely and started
+failing every experiment (`OSError: [Errno 28] No space left on device`) after
+~26 trials. Inspected what's actually in one of these directories before
+deciding what to do about it:
+
+- **`concurrency_N/inputs.json` (×6, ~56MB each, ~90% of the total size)**:
+  a byte-for-byte redundant copy of the same dataset already cached at
+  `sharegpt-cache/inputs.json` — every level, every trial, re-writes the
+  identical 73k-conversation file for no reason. Zero unique information.
+- **`concurrency_N/profile_export.jsonl` (×6, ~2.7-10MB/level)**: genuinely
+  useful per-request raw records (TTFT/ITL/latency/HTTP breakdown for every
+  single request) — the only place with this granularity; Akamas itself never
+  reads it (it scores from Prometheus).
+- **`sweep_aggregate/profile_export_aiperf_sweep.json` (112KB)**: a ready-made
+  per-concurrency-level summary across the whole sweep, including AIPerf's own
+  `goodput`/`good_request_fraction`/latency percentiles — the most useful single
+  file here, and a candidate input if the windowing gap above ever gets a real
+  fix (see previous section).
+- **`aggregate/concurrency_N/*`, `run_config.json`, `logs/aiperf.log`**: small,
+  cheap, useful for debugging a specific trial.
+
+**Fix applied**: `05-job.yaml` now wipes every previous run's output
+(`find /benchmarks -mindepth 1 -maxdepth 1 -name 'aiperf-*' -exec rm -rf {} +`)
+at the start of each run, before generating new output — sparing only
+`sharegpt-cache/` (name doesn't match the pattern). Nothing here is scored by
+Akamas or needed past the run that produced it, so nothing is lost; this just
+guarantees the PVC never fills up again regardless of how many trials the study
+runs. Manually cleared the already-full PVC once (26 stale `aiperf-*`
+directories, back down to the 126MB `sharegpt-cache` alone) to unblock the
+study immediately.
 
 ### Token length cap on ShareGPT (2026-07-17) — built-in, not a config choice
 
