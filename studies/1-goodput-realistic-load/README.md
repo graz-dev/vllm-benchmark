@@ -264,38 +264,47 @@ combo `0-explorative` found these crashes on, so the same exclusions are kept ra
 than assumed fixed. (They would only plausibly become unnecessary on Hopper+ hardware,
 per that incident's own root cause — not relevant here.)
 
-## Windowing — `trim` anchored to `RunTest` (2026-07-21, was `stability`)
+## Windowing — `stability` (2026-07-21: `trim` tried and reverted same day)
 
 **Current config:**
 
 ```yaml
 windowing:
-  type: trim
-  trim: ["20m", "5m"]
-  task: RunTest
+  type: stability
+  stability:
+    metric: vLLM.prefill_token_throughput
+    width: 6
+    maxStdDev: 300000000
+    when:
+      metric: vLLM.prefill_token_throughput
+      is: max
 ```
 
-This isolates a single, known time slot inside the `RunTest` task: the sweep built by
-`05-job.yaml` around this trial's own discovered SLA-saturation point always places
-the "at the SLA edge" concurrency level (1.0x the discovered ceiling) as the 5th of 6
-levels, ~20 minutes into `RunTest`'s own ~30.5-minute run — see "Per-trial saturation
-discovery" below for the full mechanism and why a fixed concurrency list (and the
-`stability` windowing that went with it) had to be replaced together, not separately.
+Back to `stability` after briefly switching to `trim` + `task: RunTest` the same day
+(see "Per-trial saturation discovery" below for the full mechanism this depends on).
+The reasoning that brought it back: `RunTest`'s sweep no longer targets fractions of a
+single discovered ceiling — it now densely samples the *exact* bracket Discover's own
+analysis found (`max_passing_concurrency` → `first_failing_concurrency`, 6 levels
+evenly spaced across that specific gap). With the sweep this tightly bounded to the
+real transition zone — not extending 1.3x past the ceiling into deep-saturation
+territory the way the earlier fraction-based ramp did — `stability`'s "pick the
+max-throughput stable window" is expected to land at or very near the SLA edge inside
+that narrow bracket, rather than sliding to an over-saturated top rung the way it did
+with the old wide/fixed lists (see "Windowing still lands on the last rung" below).
 
-**History, for context**: earlier revisions used `windowing.type: stability` (scan the
-whole trial for the most-stable, highest-`prefill_token_throughput` window) because
-`0-explorative`'s single fixed-rate load converges to one steady state with an obvious
-`trim` cut point, but this study's load was always a multi-level sweep with no single
-steady state — `stability` was the natural fit for a sweep *as long as the sweep's
-concurrency levels were fixed and the whole trial was one uninterrupted sweep task*.
-Both of those stopped being true once per-trial saturation discovery was added (a
-second workflow task, `Discover`, generates its own real traffic before `RunTest`
-starts) — see "Per-trial saturation discovery" below for why that broke `stability`
-specifically, not just made it imprecise. The old `stability` config (`width: 7` → `6`,
-`maxStdDev: 300000000` as a deliberate near-no-op, `when` nesting inside `stability`
-not as a sibling — confirmed against live docs and a real `akamas create study`
-rejection) is preserved in git history if a future study on a truly fixed sweep wants
-to reuse the pattern.
+**Known, accepted residual risk — not resolved, explicit user call**: `stability` has
+no `task` scoping (confirmed against a real `akamas create study` rejection when an
+earlier draft tried `task` as a sibling of `stability`) and always scans the *whole*
+trial, including the `Discover` task's own 8-step grid search that runs immediately
+before `RunTest` and sends real traffic up to concurrency 1024 to find this trial's
+bracket in the first place. If `Discover`'s own reconnaissance traffic happens to
+produce a higher stable `prefill_token_throughput` window than anything in `RunTest`'s
+tightly-bounded sweep, `stability` would score that instead — there's no way to
+exclude it. This is exactly the risk `trim` + `task: RunTest` was built to eliminate
+entirely (deterministically point at a known slot, no scanning at all); reverting to
+`stability` accepts that risk on the bet that a narrow, bracket-targeted sweep won't
+actually trigger it in practice. Revisit if real trial data shows `Discover`'s own
+grid winning the window instead of `RunTest`'s sweep.
 
 ## Latency SLA thresholds — flagged as a starting point, not final
 
@@ -606,29 +615,44 @@ to it.** Two workflow tasks now run per trial instead of one:
    throughput ceiling): 8 log-spaced concurrency steps between `--concurrency-min
    8` and `--concurrency-max 1024` (matching `max_num_seqs`'s own tuned domain),
    `--ttft-sla-ms 1500 --tpot-sla-ms 300`, 300s per step. AIPerf's own
-   `sla_breach_knee` post-process writes `max_passing_concurrency` (the highest
-   concurrency where TTFT/ITL P95 both still pass) to
-   `sweep_aggregate/sla_breach.json`; the job script reads that value and writes
-   it to a plain file, `/benchmarks/discovered-concurrency.txt`, on the shared
-   `aiperf-results` PVC — falls back to `16` (this study's own confirmed-clean
+   `sla_breach_knee` post-process writes both `max_passing_concurrency` (the
+   highest concurrency where TTFT/ITL P95 both still pass) and
+   `first_failing_concurrency` (the lowest one where either fails) to
+   `sweep_aggregate/sla_breach.json`; the job script reads both and writes
+   `{"max_passing": ..., "first_failing": ...}` to a plain JSON file,
+   `/benchmarks/discovered-concurrency.json`, on the shared `aiperf-results`
+   PVC — falls back to `max_passing = 16` (this study's own confirmed-clean
    lowest rung from the earlier fixed-list exploration) if every grid step
    already breaches SLA for a genuinely bad config.
 2. **`RunTest`** (`05-job.yaml`) — reads that file and builds its own 6-level
-   sweep as fractions of the discovered ceiling: `0.15x, 0.35x, 0.6x, 0.85x,
-   1.0x, 1.3x`, rounded to integers (with a dedup-bump guard for very small
-   ceilings where rounding could collapse two fractions to the same integer).
-   The 1.0x level is always exactly at this trial's own SLA edge, by
-   construction — regardless of whether the discovered ceiling was 40 or 900.
+   sweep evenly spaced **inside the exact discovered bracket**
+   (`max_passing` → `first_failing`, at 0%/20%/40%/60%/80%/100% of the gap
+   between them), not fractions of a single point. Reasoning for the change
+   (2026-07-21, from an earlier fraction-based version of this ramp): Discover's
+   own 8-step grid is coarse (log-spaced 8→1024, consecutive steps roughly 2x
+   apart), so the true SLA edge can sit anywhere inside the gap between the
+   last passing step and the first failing one — sampling *inside that specific
+   gap* is strictly more precise than picking arbitrary fractions of just the
+   passing endpoint, which could either undershoot (stay well below the real
+   edge) or barely reach it depending on where in a wide gap the real edge
+   actually sits. If `first_failing` is `null` (every grid step passed —
+   a genuinely excellent config), extrapolates a plausible failing point 50%
+   beyond `max_passing` so there's still a real transition zone to sample
+   rather than a degenerate flat range.
 
 **Why this needed a second workflow task, not just a second phase in the same
-script**: see "Windowing — `trim` anchored to `RunTest`" above — `Discover`'s
-own grid search sends real traffic at concurrencies up to 1024, and
-`windowing.stability`'s "scan the whole trial for the max throughput" had no
-way to avoid picking that up instead of `RunTest`'s actual sweep. Splitting
-into two tasks and switching to `trim` + `task: RunTest` sidesteps this
-entirely — and also means this study no longer needs `stability`'s "scan for
-the max" at all, since the sweep is now built so the interesting point is
-always at a known position (level 5 of 6).
+script**: see "Windowing — `stability`" above for the full back-and-forth on
+this specific point — `Discover`'s own grid search sends real traffic at
+concurrencies up to 1024, and `windowing.stability` has no way to exclude that
+traffic from its "scan the whole trial for the max throughput" search (no
+`task` scoping exists for `stability`). Splitting `Discover` and `RunTest` into
+separate tasks doesn't fix that risk by itself (both still sit inside the one
+trial `stability` scans) — it's `RunTest`'s sweep now being narrowly bounded to
+the real transition bracket, not a wide/fixed list, that's expected to keep
+`stability` landing on `RunTest`'s own sweep in practice. Accepted as a known,
+unresolved residual risk rather than eliminated outright — see "Windowing —
+`stability`" above for the full reasoning and what would have eliminated it
+(`trim` + `task: RunTest`, tried and reverted the same day).
 
 **Cost**: `Discover`'s 8 x 300s grid adds **~40 minutes per trial** on top of
 `RunTest`'s existing ~30 minutes — **~70 minutes/trial total**, roughly double

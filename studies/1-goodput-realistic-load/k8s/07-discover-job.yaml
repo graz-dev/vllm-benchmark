@@ -31,13 +31,15 @@ spec:
       containers:
         # 2026-07-21: "Discover" phase — runs BEFORE the RunTest sweep (05-job.yaml)
         # in this trial's own workflow, see README's "Per-trial saturation discovery"
-        # section. Finds THIS TRIAL'S OWN concurrency ceiling (the point where TTFT/ITL
-        # SLA breaks) using AIPerf's own max-concurrency-under-sla search recipe, then
-        # writes it to a plain file on the shared aiperf-results PVC so the RunTest
-        # task (a separate pod, same PVC) can read it and build a sweep relative to
-        # THIS config's own capacity — instead of a fixed concurrency list that's
-        # right for one config and wrong for every other (see "Windowing chases raw
-        # throughput" incident this study already hit once with a static list).
+        # section. Finds THIS TRIAL'S OWN concurrency bracket (the last concurrency
+        # where TTFT/ITL SLA still passes, and the first where it fails) using
+        # AIPerf's own max-concurrency-under-sla search recipe, then writes both
+        # numbers to a plain JSON file on the shared aiperf-results PVC so the
+        # RunTest task (a separate pod, same PVC) can read them and build a sweep
+        # densely sampling THAT specific bracket — instead of a fixed concurrency
+        # list that's right for one config and wrong for every other (see "Windowing
+        # chases raw throughput" incident this study already hit once with a static
+        # list).
         - name: aiperf
           image: python:3.12-slim
           command: ["sh", "-c"]
@@ -97,18 +99,29 @@ spec:
                 --ui simple \
                 --output-artifact-dir "$DISCOVER_DIR"
 
+              # 2026-07-21: write BOTH boundary values sla_breach_knee gives us, not
+              # just max_passing_concurrency — RunTest's own sweep now targets the
+              # exact bracket between them (the real transition zone), not arbitrary
+              # fractions of a single point. See README's "Per-trial saturation
+              # discovery" section for why this is more precise: with an 8-step grid
+              # this coarse (8,16,32,63,126,252,502,1000...), the true SLA edge could
+              # sit anywhere between a passing step and the next failing one — RunTest
+              # is what actually samples densely inside that specific gap.
               BREACH_FILE="$DISCOVER_DIR/sweep_aggregate/sla_breach.json"
-              DISCOVERED=$(python3 -c "
+              python3 -c "
               import json
               d = json.load(open('$BREACH_FILE'))
-              v = d.get('max_passing_concurrency')
+              max_passing = d.get('max_passing_concurrency')
+              first_failing = d.get('first_failing_concurrency')
               # Fallback if every grid step already breaches SLA (a genuinely bad
               # config) — 16 matches this study's own confirmed-clean lowest rung
               # from the earlier fixed-list exploration, not an arbitrary guess.
-              print(v if v is not None else 16)
-              ")
-              echo "Discovered max_passing_concurrency: $DISCOVERED"
-              echo "$DISCOVERED" > /benchmarks/discovered-concurrency.txt
+              if max_passing is None:
+                  max_passing = 16
+              result = {'max_passing': max_passing, 'first_failing': first_failing}
+              print('Discovered bracket:', result)
+              json.dump(result, open('/benchmarks/discovered-concurrency.json', 'w'))
+              "
           env:
             - name: HF_TOKEN
               valueFrom:

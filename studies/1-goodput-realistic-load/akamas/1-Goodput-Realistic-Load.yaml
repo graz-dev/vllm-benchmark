@@ -23,44 +23,37 @@ goal:
         formula: vLLM.inter_token_latency_p95 <= 300
 
 windowing:
-  # CHANGED 2026-07-21: stability -> trim. See README's "Per-trial saturation
-  # discovery" section for the full incident this replaces.
+  # REVERTED 2026-07-21: trim -> stability, same day it was changed the other way.
+  # See README's "Per-trial saturation discovery" section for the full back-and-forth.
   #
-  # `stability` (scan for the max-throughput stable window across the WHOLE
-  # trial) broke once the concurrency sweep became per-trial-relative instead
-  # of a fixed list: `stability` has no `task` scoping (confirmed the hard way,
-  # see the removed comment this replaced) and always scans the entire trial's
-  # time range — including the new "Discover" task's own 8-step grid search,
-  # which sends real traffic at concurrencies up to 1024 to find THIS trial's
-  # own SLA-breaking point (see workflow), before RunTest's sweep even starts.
-  # Discover's own traffic could easily out-throughput RunTest's carefully
-  # chosen levels at raw `prefill_token_throughput` (the same "raw throughput
-  # doesn't peak where SLA breaks" problem this study already hit once with a
-  # static list — see "Windowing still lands on the last rung" below), so
-  # `stability` risked scoring Discover's own reconnaissance pass instead of
-  # RunTest's actual sweep.
+  # RunTest's sweep no longer targets fractions of a single discovered point — it now
+  # densely samples the EXACT bracket Discover's own sla_breach_knee analysis found
+  # (max_passing_concurrency -> first_failing_concurrency, 6 levels evenly spaced
+  # across that specific gap, see 05-job.yaml). Explicit decision (user's own call,
+  # 2026-07-21): with the sweep this tightly bounded to the real transition zone
+  # instead of extending 1.3x past the ceiling into deep-saturation territory,
+  # `stability`'s "pick the max-throughput stable window" is expected to land at or
+  # very near the SLA edge within that narrow bracket, rather than sliding to an
+  # over-saturated top rung the way it did with the old wide/fixed lists.
   #
-  # `trim` + `task: RunTest` sidesteps this differently: since RunTest's sweep
-  # is now built AROUND the discovered SLA boundary (levels at 0.15x/0.35x/
-  # 0.6x/0.85x/1.0x/1.3x of that trial's own ceiling — see 05-job.yaml), the
-  # "interesting" point (right at the SLA edge) is always the SAME relative
-  # position in the ramp: level 5 of 6 (the 1.0x level), regardless of what
-  # concrete concurrency value that trial's ceiling actually was. No more
-  # "scan for the max" needed at all — we already know where it is, by
-  # construction, so this study no longer needs to fight the raw-throughput-
-  # vs-SLA metric mismatch that motivated `stability` in the first place.
-  #
-  # trim: ["20m", "5m"], task: RunTest — RunTest's own timeline (after
-  # Discover already ensured the dataset cache exists, so RunTest has no more
-  # prep step) is ~20-40s overhead + 6 x 300s levels ≈ 30.5min total. Levels
-  # 1-4 (0.15x/0.35x/0.6x/0.85x) span the first ~20min; trimming that away and
-  # trimming 5min off the end isolates level 5 (the 1.0x level)'s own 300s
-  # window almost exactly (~20-40s of slop from the startup-overhead
-  # approximation — treated the same as every other placeholder-precision
-  # value in this README, not chased to the second).
-  type: trim
-  trim: ["20m", "5m"]
-  task: RunTest
+  # Known, accepted residual risk, not resolved, not re-litigated further per that
+  # decision: `stability` has no `task` scoping (confirmed against a real
+  # `akamas create study` rejection when an earlier draft tried `task` as a sibling
+  # of `stability`) and always scans the WHOLE trial, including the "Discover" task's
+  # own 8-step grid search that runs immediately before RunTest and sends real
+  # traffic up to concurrency 1024 to find this trial's bracket in the first place.
+  # If Discover's own reconnaissance traffic happens to produce a higher stable
+  # `prefill_token_throughput` window than anything in RunTest's tightly-bounded
+  # sweep, `stability` would score that instead — there is no way to exclude it.
+  # Revisit if real trial data shows this happening.
+  type: stability
+  stability:
+    metric: vLLM.prefill_token_throughput
+    width: 6
+    maxStdDev: 300000000
+    when:
+      metric: vLLM.prefill_token_throughput
+      is: max
 
 parametersSelection:
   # --- Same 16 as 0-explorative, minus dtype and prefix_caching_hash_algo (both
