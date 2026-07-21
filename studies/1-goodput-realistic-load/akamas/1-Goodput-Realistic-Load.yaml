@@ -2,7 +2,7 @@ kind: study
 
 name: 1-Goodput-Realistic-Load
 system: vLLM_Benchmark_1_Goodput_Realistic_Load
-workflow: 1-Goodput-Realistic-Load-Workflow
+workflow: 1-Goodput-Realistic-Load-Workflow-v2
 
 goal:
   objective: maximize

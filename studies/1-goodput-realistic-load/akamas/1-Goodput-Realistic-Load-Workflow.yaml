@@ -1,6 +1,12 @@
 kind: workflow
 
-name: 1-Goodput-Realistic-Load-Workflow
+# 2026-07-21: renamed with a -v2 suffix instead of reusing the old workflow's
+# name — Akamas has no "update workflow"/"rename" CLI command at all (confirmed
+# against live docs: only create/list/describe/delete exist for workflows), so
+# a workflow change always means a new resource, not an in-place edit. This
+# leaves the old "1-Goodput-Realistic-Load-Workflow" (referenced by the
+# previously-renamed old study) untouched rather than deleting it.
+name: 1-Goodput-Realistic-Load-Workflow-v2
 tasks:
   - name: Write config
     operator: FileConfigurator
