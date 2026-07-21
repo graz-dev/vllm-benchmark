@@ -264,56 +264,38 @@ combo `0-explorative` found these crashes on, so the same exclusions are kept ra
 than assumed fixed. (They would only plausibly become unnecessary on Hopper+ hardware,
 per that incident's own root cause — not relevant here.)
 
-## Windowing — `stability`, not `trim`
+## Windowing — `trim` anchored to `RunTest` (2026-07-21, was `stability`)
 
-`0-explorative`'s single fixed-rate load converges to one steady state, so a `trim`
-window (cut a fixed amount off the head/tail) had an obvious, principled cut point.
-This study's load is a **sweep** (7 concurrency levels, 1→64, closed-loop — see
-"Load generator" below) — there is no single steady state to trim around, so
-`windowing.type: stability` is used instead: scan for a temporally stable interval,
-then, among the stable candidates, pick the one where a chosen metric is maximized.
+**Current config:**
 
 ```yaml
 windowing:
-  type: stability
-  stability:
-    metric: vLLM.prefill_token_throughput
-    width: 7
-    maxStdDev: 300000000
-    when:
-      metric: vLLM.prefill_token_throughput
-      is: max
+  type: trim
+  trim: ["20m", "5m"]
+  task: RunTest
 ```
 
-`when` nests **inside** `stability`, not as a sibling under `windowing` — an early draft
-had it as a sibling (and also carried a `task: RunTest` key) and failed `akamas create
-study` outright: `$.stability.when: is missing but it is required` /
-`$.task`/`$.when: is not defined in the schema`. Confirmed against both the live docs
-and the real error: `task` is a `trim`-only key (it tells trim which workflow task's
-time range to anchor `trim[0]` on) — `stability` has no `task` key at all, since it
-scans the trial's own timeseries directly. In practice this still lands within the
-`RunTest` task's window regardless, since `vLLM.prefill_token_throughput` only has real
-values while vLLM is actually serving load, not during the deploy tasks.
+This isolates a single, known time slot inside the `RunTest` task: the sweep built by
+`05-job.yaml` around this trial's own discovered SLA-saturation point always places
+the "at the SLA edge" concurrency level (1.0x the discovered ceiling) as the 5th of 6
+levels, ~20 minutes into `RunTest`'s own ~30.5-minute run — see "Per-trial saturation
+discovery" below for the full mechanism and why a fixed concurrency list (and the
+`stability` windowing that went with it) had to be replaced together, not separately.
 
-- **Same metric for both roles** (`prefill_token_throughput` for both the stability
-  check and the `when: max` comparison) — a single-metric pattern, not the
-  two-metric split (a separate "has it settled" indicator plus a separate "which one is
-  best" comparison) considered earlier. `when: max` naturally favors the highest-
-  throughput stable interval, which for a monotonic load sweep lands near the
-  highest-load level the server sustains without degrading — i.e. "toward the top of
-  the sweep" without hardcoding that assumption, and without penalizing an earlier
-  degradation if one occurs.
-- **`width: 7`** samples, native/raw resolution (no explicit `resolution` set) —
-  matches the 7 concurrency levels in the AIPerf sweep, one sample per level (bumped
-  from 6 to 7 on 2026-07-17 when the load generator switched from a 6-stage rate
-  ramp to a 7-level concurrency sweep — see "Load generator" below).
-- **`maxStdDev: 300000000`** — set by hand 2026-07-17, effectively a no-op at this
-  metric's scale (real `prefill_token_throughput` values run in the thousands, not
-  hundreds of millions), reducing the mechanism to "pick the highest-throughput
-  window among the samples" with no real stability requirement. That's a deliberate
-  choice here, not an oversight — flagged in case it should be tightened once this
-  study's own baseline/sweep data is in and a genuine flatness requirement turns out
-  to matter.
+**History, for context**: earlier revisions used `windowing.type: stability` (scan the
+whole trial for the most-stable, highest-`prefill_token_throughput` window) because
+`0-explorative`'s single fixed-rate load converges to one steady state with an obvious
+`trim` cut point, but this study's load was always a multi-level sweep with no single
+steady state — `stability` was the natural fit for a sweep *as long as the sweep's
+concurrency levels were fixed and the whole trial was one uninterrupted sweep task*.
+Both of those stopped being true once per-trial saturation discovery was added (a
+second workflow task, `Discover`, generates its own real traffic before `RunTest`
+starts) — see "Per-trial saturation discovery" below for why that broke `stability`
+specifically, not just made it imprecise. The old `stability` config (`width: 7` → `6`,
+`maxStdDev: 300000000` as a deliberate near-no-op, `when` nesting inside `stability`
+not as a sibling — confirmed against live docs and a real `akamas create study`
+rejection) is preserved in git history if a future study on a truly fixed sweep wants
+to reuse the pattern.
 
 ## Latency SLA thresholds — flagged as a starting point, not final
 
@@ -459,6 +441,14 @@ later; not today's problem to solve.)
 
 ### Sizing the concurrency sweep for this specific hardware/model/dataset
 
+**Superseded 2026-07-21** — this section's history (below) explains *why* a
+fixed list kept needing to be re-guessed; the list itself is no longer used.
+`05-job.yaml` now builds each trial's own 6-level sweep as fractions
+(`0.15x/0.35x/0.6x/0.85x/1.0x/1.3x`) of that trial's own discovered SLA
+ceiling — see "Per-trial saturation discovery" further below for the full
+mechanism. Kept here as the reasoning trail that led there, same as every
+other superseded section in this README.
+
 `--concurrency 16,48,96,160,250,380` (bumped twice on 2026-07-20, from
 `16,32,48,64,80,96` → `16,32,48,72,108,150` → this — see "Windowing still lands
 on the last rung" below), 300s per level (`--benchmark-duration 300`).
@@ -593,6 +583,72 @@ steps given the confirmed-much-higher true knee) — still not a fix for the
 windowing-metric gap above, just a better-informed guess at where the SLA
 boundary actually sits for this config. Revisit again once real trial data
 comes in for this list too.
+
+### Per-trial saturation discovery (2026-07-21) — replaces the fixed concurrency list
+
+The fixed list above (`16,48,96,160,250,380`) has a structural problem that no
+amount of re-guessing fixes: `max_num_seqs` — the parameter directly
+responsible for where the concurrency "wall" sits (see the `num_requests_running`
+investigation below) — is **itself tuned** in this study, `[16, 1024]`. A bad
+`optimize`-step config might wall out around concurrency 40; a good one might
+not wall out at all within 380. One static list can't bracket the SLA edge for
+both — it's exactly the "windowing lands on the last rung" problem from above,
+just restated: the *right* concurrency range moves with every config Akamas
+tries, and no fixed list chases a moving target correctly.
+
+**Fix: discover each trial's own ceiling, then build that trial's ramp relative
+to it.** Two workflow tasks now run per trial instead of one:
+
+1. **`Discover`** (`07-discover-job.yaml` / `run_discover_saturation.sh`) — runs
+   AIPerf's `max-concurrency-under-sla` search recipe (`--search-style grid`,
+   the SLA-aware equivalent of GuideLLM's old `--rate-type throughput`
+   saturation search, but finding the SLA-breaking point rather than the raw
+   throughput ceiling): 8 log-spaced concurrency steps between `--concurrency-min
+   8` and `--concurrency-max 1024` (matching `max_num_seqs`'s own tuned domain),
+   `--ttft-sla-ms 1500 --tpot-sla-ms 300`, 300s per step. AIPerf's own
+   `sla_breach_knee` post-process writes `max_passing_concurrency` (the highest
+   concurrency where TTFT/ITL P95 both still pass) to
+   `sweep_aggregate/sla_breach.json`; the job script reads that value and writes
+   it to a plain file, `/benchmarks/discovered-concurrency.txt`, on the shared
+   `aiperf-results` PVC — falls back to `16` (this study's own confirmed-clean
+   lowest rung from the earlier fixed-list exploration) if every grid step
+   already breaches SLA for a genuinely bad config.
+2. **`RunTest`** (`05-job.yaml`) — reads that file and builds its own 6-level
+   sweep as fractions of the discovered ceiling: `0.15x, 0.35x, 0.6x, 0.85x,
+   1.0x, 1.3x`, rounded to integers (with a dedup-bump guard for very small
+   ceilings where rounding could collapse two fractions to the same integer).
+   The 1.0x level is always exactly at this trial's own SLA edge, by
+   construction — regardless of whether the discovered ceiling was 40 or 900.
+
+**Why this needed a second workflow task, not just a second phase in the same
+script**: see "Windowing — `trim` anchored to `RunTest`" above — `Discover`'s
+own grid search sends real traffic at concurrencies up to 1024, and
+`windowing.stability`'s "scan the whole trial for the max throughput" had no
+way to avoid picking that up instead of `RunTest`'s actual sweep. Splitting
+into two tasks and switching to `trim` + `task: RunTest` sidesteps this
+entirely — and also means this study no longer needs `stability`'s "scan for
+the max" at all, since the sweep is now built so the interesting point is
+always at a known position (level 5 of 6).
+
+**Cost**: `Discover`'s 8 x 300s grid adds **~40 minutes per trial** on top of
+`RunTest`'s existing ~30 minutes — **~70 minutes/trial total**, roughly double
+the previous ~30-35 minutes. Explicit tradeoff (user's own instruction, 2026-07-21:
+keep every step — both `Discover`'s grid and `RunTest`'s sweep — at 300s "per
+avere un po' di dati", i.e. for a less noisy per-step signal than the faster
+60s bursts used during manual exploration) in exchange for a concurrency range
+that's actually correct for every config Akamas tries, not just the baseline.
+With `numberOfExperiments: 1000` in the `optimize` step, this is a real budget
+question worth revisiting if the study's total wall-clock time becomes a
+problem — not addressed here, flagged for whoever reviews the study's overall
+progress.
+
+**PVC pruning moved to `Discover`**: since `Discover` now runs first in every
+trial, it owns the `find /benchmarks -mindepth 1 -maxdepth 1 -name 'aiperf-*'
+-exec rm -rf {} +` cleanup (see "AIPerf artifact files" below) instead of
+`RunTest` — `RunTest` no longer prunes at all, so it doesn't risk deleting
+`Discover`'s own just-written `discovered-concurrency.txt` (that file lives at
+the PVC root, not under an `aiperf-*` directory, so it was never actually at
+risk either way, but the ownership move keeps "who cleans up" unambiguous).
 
 ### AIPerf artifact files: what's kept and why (2026-07-20)
 

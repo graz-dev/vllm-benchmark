@@ -23,37 +23,44 @@ goal:
         formula: vLLM.inter_token_latency_p95 <= 300
 
 windowing:
-  # stability, not trim: this study's load is a sweep/ramp, not a single steady state,
-  # so a fixed head/tail trim has no principled cut points. Instead, scan for a stable
-  # interval and pick the one where throughput is maximized — for a monotonic ramp that
-  # naturally lands near the highest-load stage the server sustains without degrading,
-  # i.e. "toward the end of the ramp" without hardcoding that assumption.
+  # CHANGED 2026-07-21: stability -> trim. See README's "Per-trial saturation
+  # discovery" section for the full incident this replaces.
   #
-  # width: 6 samples at native/raw resolution (no explicit `resolution` set) — matches
-  # the 6 concurrency levels in the AIPerf sweep (2026-07-17, reduced from 7 to 6 and
-  # 60s->300s per level on 2026-07-17 — see README's "Load generator" section), one
-  # sample per level, same alignment philosophy as before.
+  # `stability` (scan for the max-throughput stable window across the WHOLE
+  # trial) broke once the concurrency sweep became per-trial-relative instead
+  # of a fixed list: `stability` has no `task` scoping (confirmed the hard way,
+  # see the removed comment this replaced) and always scans the entire trial's
+  # time range — including the new "Discover" task's own 8-step grid search,
+  # which sends real traffic at concurrencies up to 1024 to find THIS trial's
+  # own SLA-breaking point (see workflow), before RunTest's sweep even starts.
+  # Discover's own traffic could easily out-throughput RunTest's carefully
+  # chosen levels at raw `prefill_token_throughput` (the same "raw throughput
+  # doesn't peak where SLA breaks" problem this study already hit once with a
+  # static list — see "Windowing still lands on the last rung" below), so
+  # `stability` risked scoring Discover's own reconnaissance pass instead of
+  # RunTest's actual sweep.
   #
-  # maxStdDev: 300 is a PLACEHOLDER (2026-07-15) sized off 0-explorative's own observed
-  # prefill_token_throughput range (~2500-3600 tok/s) — recalibrate once this study's
-  # baseline + first sweep trials report real numbers, same as the TTFT/ITL thresholds
-  # below. A prior study's reference config used maxStdDev: 1000000000, which at this
-  # metric's scale never rejects any window as unstable — that value doesn't transfer
-  # across metrics of different magnitude, so it isn't reused verbatim here.
+  # `trim` + `task: RunTest` sidesteps this differently: since RunTest's sweep
+  # is now built AROUND the discovered SLA boundary (levels at 0.15x/0.35x/
+  # 0.6x/0.85x/1.0x/1.3x of that trial's own ceiling — see 05-job.yaml), the
+  # "interesting" point (right at the SLA edge) is always the SAME relative
+  # position in the ramp: level 5 of 6 (the 1.0x level), regardless of what
+  # concrete concurrency value that trial's ceiling actually was. No more
+  # "scan for the max" needed at all — we already know where it is, by
+  # construction, so this study no longer needs to fight the raw-throughput-
+  # vs-SLA metric mismatch that motivated `stability` in the first place.
   #
-  # `when` nests INSIDE `stability`, not as a sibling under `windowing` — and there is
-  # no `task` key for this windowing type at all (that's trim-only). Confirmed the hard
-  # way: an earlier draft with `when`/`task` as siblings failed `akamas create study`
-  # with "$.stability.when: is missing but it is required" / "$.task",
-  # "$.when: is not defined in the schema".
-  type: stability
-  stability:
-    metric: vLLM.prefill_token_throughput
-    width: 6
-    maxStdDev: 300000000
-    when:
-      metric: vLLM.prefill_token_throughput
-      is: max
+  # trim: ["20m", "5m"], task: RunTest — RunTest's own timeline (after
+  # Discover already ensured the dataset cache exists, so RunTest has no more
+  # prep step) is ~20-40s overhead + 6 x 300s levels ≈ 30.5min total. Levels
+  # 1-4 (0.15x/0.35x/0.6x/0.85x) span the first ~20min; trimming that away and
+  # trimming 5min off the end isolates level 5 (the 1.0x level)'s own 300s
+  # window almost exactly (~20-40s of slop from the startup-overhead
+  # approximation — treated the same as every other placeholder-precision
+  # value in this README, not chased to the second).
+  type: trim
+  trim: ["20m", "5m"]
+  task: RunTest
 
 parametersSelection:
   # --- Same 16 as 0-explorative, minus dtype and prefix_caching_hash_algo (both

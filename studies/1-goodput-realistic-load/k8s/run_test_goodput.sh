@@ -11,13 +11,14 @@ kubectl delete -f "$BENCH_FILE" ; kubectl apply -f "$BENCH_FILE"
 # wait — print the job's own container logs first, so they land in this task's stdout
 # and show up in the Akamas UI without needing separate kubectl access.
 #
-# --timeout=6000s (100m) kept from the inference-perf era even though AIPerf's
-# closed-loop --concurrency model shouldn't reproduce the unbounded-duration failure
-# that motivated it (see README) — cheap insurance, and still safely under the
-# workflow's own RunTest task timeout (120m = 7200s, see
-# akamas/1-Goodput-Realistic-Load-Workflow.yaml).
+# 2026-07-21: the "Discover" task (run_discover_saturation.sh) now runs before this
+# one each trial and already ensures the dataset cache exists, so this job no longer
+# has a prep step — expected total is just 6 x 300s levels (~30min) plus a few
+# seconds of overhead. --timeout=2100s (35m) replaces the old 6000s inference-perf-era
+# value, still with margin, and safely under the workflow's own RunTest task timeout
+# (60m, see akamas/1-Goodput-Realistic-Load-Workflow.yaml).
 set +e
-kubectl wait --for=condition=complete job/aiperf-benchmark -n llm-benchmark --timeout=6000s
+kubectl wait --for=condition=complete job/aiperf-benchmark -n llm-benchmark --timeout=2100s
 WAIT_EXIT=$?
 set -e
 

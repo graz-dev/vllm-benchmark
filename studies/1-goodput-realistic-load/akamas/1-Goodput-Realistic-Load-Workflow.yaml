@@ -36,11 +36,25 @@ tasks:
         key:  /work/vllm-benchmark/studies/1-goodput-realistic-load/akamas/id_rsa
       command: bash /work/vllm-benchmark/studies/1-goodput-realistic-load/k8s/apply_config.sh
 
+  - name: Discover
+    operator: Executor
+    arguments:
+      # 2026-07-21: finds THIS TRIAL'S OWN concurrency ceiling before RunTest builds
+      # a sweep around it — see README's "Per-trial saturation discovery" section.
+      # 8 grid steps x 300s = 40min expected; 60m timeout gives margin.
+      retries: 0
+      timeout: 60m
+      host:
+        hostname: toolbox
+        username: akamas
+        key:  /work/vllm-benchmark/studies/1-goodput-realistic-load/akamas/id_rsa
+      command: bash /work/vllm-benchmark/studies/1-goodput-realistic-load/k8s/run_discover_saturation.sh
+
   - name: RunTest
     operator: Executor
     arguments:
       retries: 0
-      timeout: 120m
+      timeout: 60m
       host:
         hostname: toolbox
         username: akamas

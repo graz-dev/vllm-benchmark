@@ -47,81 +47,35 @@ spec:
               set -e
               pip install --quiet aiperf==0.11.0
 
-              # 2026-07-20: wipe every previous run's output before starting this one.
-              # Confirmed the hard way: the aiperf-results PVC (10Gi) filled up
-              # completely after ~26 Akamas trials and started failing every
-              # experiment with "OSError: [Errno 28] No space left on device" — each
-              # run writes ~370MB, ~90% of which
-              # (concurrency_*/inputs.json x6, ~56MB each) is a byte-for-byte
-              # redundant copy of the SAME cached dataset already sitting at
-              # sharegpt-cache/inputs.json. Akamas never reads any of this (it scores
-              # from Prometheus, not these files), so nothing here needs to survive
-              # past the run that produced it. Only sharegpt-cache/ is spared (name
-              # doesn't match aiperf-*) — that's the one thing worth keeping across
-              # trials, see the dataset-validation caching note below.
-              find /benchmarks -mindepth 1 -maxdepth 1 -name 'aiperf-*' -exec rm -rf {} +
+              # 2026-07-21: concurrency is no longer a fixed list — it's built
+              # relative to THIS TRIAL'S OWN saturation point, discovered by the
+              # workflow's "Discover" task (07-discover-job.yaml) that runs right
+              # before this one and writes a single number to this plain file (not
+              # matched by RunTest's own cleanup pattern, and not touched by
+              # anything here — Discover owns the per-trial PVC prune now, see its
+              # own script). See README's "Per-trial saturation discovery" section
+              # for why a fixed list couldn't work across every config Akamas tries:
+              # a good config's real ceiling can sit far past a bad config's, so no
+              # single static list is ever right for both.
+              DISCOVERED=$(cat /benchmarks/discovered-concurrency.txt)
+              echo "Building ramp around discovered ceiling: $DISCOVERED"
 
-              # 2026-07-17: without this, each of the concurrency levels below
-              # re-downloads/re-tokenizes/re-validates the FULL 73k-conversation
-              # ShareGPT dataset from scratch (~4-5 min each, confirmed from a real
-              # run's own logs) — a fresh AIPerfSystem is started per concurrency
-              # level, and the ShareGPT loader always re-validates the whole dataset
-              # regardless of how many requests actually get sent. That shows up as
-              # a visible stall/drop between every step of the ramp in Grafana.
-              #
-              # Fix: generate AIPerf's own inputs.json (the fully validated/tokenized
-              # conversation set — confirmed via source, aiperf/dataset/dataset_manager.py
-              # _generate_input_payloads() dumps the ENTIRE loaded dataset, not just
-              # requests actually sent) ONCE, cached on the aiperf-results PVC so it
-              # survives across Akamas trials too, then feed it back via
-              # --input-file/--custom-dataset-type inputs_json (a real, registered
-              # loader — aiperf/plugin/plugins.yaml's custom_dataset_loader.inputs_json
-              # entry, aiperf/dataset/loader/inputs_json.py — that replays payloads
-              # verbatim with no re-tokenization/re-validation pass). Same
-              # model/tokenizer/streaming flags used for both the prep and real run so
-              # the cached payloads match what the real sweep would generate itself.
+              CONCURRENCY_LIST=$(python3 -c "
+              c = float('$DISCOVERED')
+              fractions = [0.15, 0.35, 0.6, 0.85, 1.0, 1.3]
+              levels = []
+              prev = 0
+              for f in fractions:
+                  v = max(1, round(c * f))
+                  if v <= prev:
+                      v = prev + 1
+                  levels.append(v)
+                  prev = v
+              print(','.join(str(v) for v in levels))
+              ")
+              echo "Concurrency ramp: $CONCURRENCY_LIST"
+
               CACHE_FILE=/benchmarks/sharegpt-cache/inputs.json
-              if [ ! -f "$CACHE_FILE" ]; then
-                echo "No cached ShareGPT inputs.json — generating once (one-time ~5min dataset validation pass)..."
-                # --request-count 1 (not --benchmark-duration): waits for exactly 1
-                # request to actually complete, however long that takes. A first
-                # attempt used --benchmark-duration 1 and failed the whole job —
-                # real request latency at concurrency 1 is several seconds (TTFT +
-                # decode), so the 1s window timed out with 0 completed requests,
-                # AIPerf exited non-zero ("No profile results to export"), and set -e
-                # killed the script before it ever reached the real sweep below.
-                # set +e around this call: the expensive part (download + validate +
-                # tokenize + write inputs.json) is already done and on disk by the
-                # time the short profiling phase runs, so a profiling-phase hiccup
-                # here shouldn't throw away work that's already complete — confirmed
-                # the hard way (see note above): a prior attempt's `cp` never ran
-                # because `aiperf profile` exited non-zero and set -e killed the
-                # script right after, forcing a full ~4.5min redo next run. The
-                # explicit check for /tmp/sharegpt-prep/inputs.json below is the
-                # actual success signal, not this command's exit code.
-                set +e
-                aiperf profile \
-                  --model qwen2.5-7b \
-                  --tokenizer Qwen/Qwen2.5-7B-Instruct \
-                  --url http://vllm.llm-serving.svc.cluster.local:8000 \
-                  --endpoint-type chat \
-                  --streaming \
-                  --public-dataset sharegpt \
-                  --concurrency 1 \
-                  --request-count 1 \
-                  --ui simple \
-                  --output-artifact-dir /tmp/sharegpt-prep
-                set -e
-                if [ ! -f /tmp/sharegpt-prep/inputs.json ]; then
-                  echo "ERROR: prep run did not produce inputs.json — see log above" >&2
-                  exit 1
-                fi
-                mkdir -p /benchmarks/sharegpt-cache
-                cp /tmp/sharegpt-prep/inputs.json "$CACHE_FILE"
-              else
-                echo "Reusing cached ShareGPT inputs.json from $CACHE_FILE (skips per-level dataset validation)."
-              fi
-
               aiperf profile \
                 --model qwen2.5-7b \
                 --tokenizer Qwen/Qwen2.5-7B-Instruct \
@@ -130,7 +84,7 @@ spec:
                 --streaming \
                 --input-file "$CACHE_FILE" \
                 --custom-dataset-type inputs_json \
-                --concurrency 16,48,96,160,250,380 \
+                --concurrency "$CONCURRENCY_LIST" \
                 --benchmark-duration 300 \
                 --goodput "time_to_first_token:1500 inter_token_latency:300" \
                 --ui simple \
