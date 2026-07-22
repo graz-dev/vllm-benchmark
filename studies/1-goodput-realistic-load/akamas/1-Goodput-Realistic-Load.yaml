@@ -32,13 +32,17 @@ windowing:
   # "max throughput" scan) — there's only one task generating load now, so
   # `stability` scanning the "whole trial" is no longer a real concern.
   #
-  # width: 12 matches the 12 concurrency levels in the sweep (150->1024,
-  # log-spaced, see 05-job.yaml) — one sample per level, same alignment
-  # philosophy as every previous version of this sweep.
+  # width: 6 — explicit user choice (2026-07-22), kept at the same value used
+  # for earlier 6-level sweeps rather than bumped to 12 to match the sweep's
+  # current level count (05-job.yaml now has 12: 150->1024, log-spaced). Not
+  # necessarily "one sample per level" the way earlier comments in this file
+  # assumed — width counts raw telemetry samples at native resolution (no
+  # `resolution` set here), which may be finer-grained than one-per-level
+  # depending on the telemetry scrape interval.
   type: stability
   stability:
     metric: vLLM.prefill_token_throughput
-    width: 12
+    width: 6
     maxStdDev: 300000000
     when:
       metric: vLLM.prefill_token_throughput
