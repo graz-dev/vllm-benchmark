@@ -264,7 +264,7 @@ combo `0-explorative` found these crashes on, so the same exclusions are kept ra
 than assumed fixed. (They would only plausibly become unnecessary on Hopper+ hardware,
 per that incident's own root cause — not relevant here.)
 
-## Windowing — `stability` (2026-07-21: `trim` tried and reverted same day)
+## Windowing — `stability` (settled 2026-07-22, after a `trim` detour)
 
 **Current config:**
 
@@ -273,38 +273,27 @@ windowing:
   type: stability
   stability:
     metric: vLLM.prefill_token_throughput
-    width: 6
+    width: 12
     maxStdDev: 300000000
     when:
       metric: vLLM.prefill_token_throughput
       is: max
 ```
 
-Back to `stability` after briefly switching to `trim` + `task: RunTest` the same day
-(see "Per-trial saturation discovery" below for the full mechanism this depends on).
-The reasoning that brought it back: `RunTest`'s sweep no longer targets fractions of a
-single discovered ceiling — it now densely samples the *exact* bracket Discover's own
-analysis found (`max_passing_concurrency` → `first_failing_concurrency`, 6 levels
-evenly spaced across that specific gap). With the sweep this tightly bounded to the
-real transition zone — not extending 1.3x past the ceiling into deep-saturation
-territory the way the earlier fraction-based ramp did — `stability`'s "pick the
-max-throughput stable window" is expected to land at or very near the SLA edge inside
-that narrow bracket, rather than sliding to an over-saturated top rung the way it did
-with the old wide/fixed lists (see "Windowing still lands on the last rung" below).
-
-**Known, accepted residual risk — not resolved, explicit user call**: `stability` has
-no `task` scoping (confirmed against a real `akamas create study` rejection when an
-earlier draft tried `task` as a sibling of `stability`) and always scans the *whole*
-trial, including the `Discover` task's own 8-step grid search that runs immediately
-before `RunTest` and sends real traffic up to concurrency 1024 to find this trial's
-bracket in the first place. If `Discover`'s own reconnaissance traffic happens to
-produce a higher stable `prefill_token_throughput` window than anything in `RunTest`'s
-tightly-bounded sweep, `stability` would score that instead — there's no way to
-exclude it. This is exactly the risk `trim` + `task: RunTest` was built to eliminate
-entirely (deterministically point at a known slot, no scanning at all); reverting to
-`stability` accepts that risk on the bet that a narrow, bracket-targeted sweep won't
-actually trigger it in practice. Revisit if real trial data shows `Discover`'s own
-grid winning the window instead of `RunTest`'s sweep.
+This is the *third* windowing config this study has used in a week, all documented
+here rather than silently overwritten — see "Per-trial saturation discovery" below
+for the full incident this settles. Brief timeline: `stability` (single fixed sweep)
+→ `trim` + `task: RunTest` (added when a two-task `Discover`/`RunTest` split needed a
+way to exclude `Discover`'s own traffic from scoring) → back to `stability` (when
+`RunTest`'s sweep started targeting the exact discovered bracket instead of a fixed
+list, on the bet that a narrow sweep would keep `stability` landing correctly even
+with `Discover` still generating traffic) → **`Discover` removed entirely** (2026-07-22
+— the two-task split didn't hold up, see below), leaving `stability` scanning a
+single-task trial again, same as the very first version, just with `width: 12` instead
+of `6` to match this study's current 12-level fixed sweep (150→1024, log-spaced, see
+"Sizing the concurrency sweep" below). The residual "does `stability` scan traffic it
+shouldn't" risk from the two-task era no longer applies — there's only one
+load-generating task per trial again.
 
 ## Latency SLA thresholds — flagged as a starting point, not final
 
@@ -450,13 +439,33 @@ later; not today's problem to solve.)
 
 ### Sizing the concurrency sweep for this specific hardware/model/dataset
 
-**Superseded 2026-07-21** — this section's history (below) explains *why* a
-fixed list kept needing to be re-guessed; the list itself is no longer used.
-`05-job.yaml` now builds each trial's own 6-level sweep as fractions
-(`0.15x/0.35x/0.6x/0.85x/1.0x/1.3x`) of that trial's own discovered SLA
-ceiling — see "Per-trial saturation discovery" further below for the full
-mechanism. Kept here as the reasoning trail that led there, same as every
-other superseded section in this README.
+**Current sweep (2026-07-22)**: `--concurrency
+150,179,213,253,302,359,428,509,606,722,860,1024`, 12 levels, 300s each
+(exactly 60min). Fixed list again, after the per-trial dynamic bracket below
+was tried and reverted (see "Per-trial saturation discovery" further down for
+that whole detour) — this section's history (below) explains *why* a fixed
+list kept needing to be re-guessed in the first place, which is still
+relevant: this list is a best-effort sizing, not a guarantee it's right for
+every config Akamas tries.
+
+Sized from this study's own real baseline data: a since-reverted
+Discover-recipe run found the baseline config's own SLA-breaking bracket at
+concurrency 128-256 (see "Per-trial saturation discovery" below for exactly
+how). Rather than re-explore blind, this list **starts at 150** — skipping the
+16-96 range this study already explored cleanly at length (see history below)
+— and spends all 12 levels at higher resolution across 150-1024 (log-spaced,
+~1.19x per step), covering up to `vLLM.max_num_seqs`'s own tuned domain
+ceiling. **Known, accepted tradeoff**: a tuned config with a low
+`max_num_seqs` (its domain allows down to 16) could wall out below 150, in
+which case every level here breaches SLA with no clean/degraded contrast for
+that specific trial — accepted because most configs are expected to sit
+above that, not because it's guaranteed.
+
+**Superseded history below**, kept as the reasoning trail: `05-job.yaml`
+briefly built each trial's own 6-level sweep as fractions of a discovered SLA
+ceiling (2026-07-21), then as an exact discovered bracket, before both were
+reverted the same week — see "Per-trial saturation discovery" for the full
+mechanism and why it didn't hold up with Akamas' own windowing model.
 
 `--concurrency 16,48,96,160,250,380` (bumped twice on 2026-07-20, from
 `16,32,48,64,80,96` → `16,32,48,72,108,150` → this — see "Windowing still lands
@@ -593,7 +602,23 @@ windowing-metric gap above, just a better-informed guess at where the SLA
 boundary actually sits for this config. Revisit again once real trial data
 comes in for this list too.
 
-### Per-trial saturation discovery (2026-07-21) — replaces the fixed concurrency list
+### Per-trial saturation discovery (2026-07-21, reverted 2026-07-22)
+
+**Reverted** — this whole mechanism (a `Discover` workflow task, a dynamic
+per-trial concurrency ramp) was tried for about a day and then rolled back to
+a fixed list (see "Sizing the concurrency sweep" above for the current one).
+Root cause of the revert: `stability` windowing has no `task` scoping, so a
+second load-generating task (`Discover`, running immediately before
+`RunTest`) always risked having its own reconnaissance traffic scored instead
+of `RunTest`'s actual sweep — the mitigation attempted (`trim` +
+`task: RunTest`, then narrowing `RunTest`'s own sweep to the exact discovered
+bracket instead of a wide one) never got a chance to be validated against
+real trial data before the two-task approach was abandoned outright as not
+practical to keep running with Akamas' own windowing model. Kept below as the
+full reasoning trail — the underlying problem this was trying to solve (a
+fixed list can't be right for every tuned config) is still real and still
+unsolved, just accepted as a known limitation of the current fixed-list
+sweep instead.
 
 The fixed list above (`16,48,96,160,250,380`) has a structural problem that no
 amount of re-guessing fixes: `max_num_seqs` — the parameter directly

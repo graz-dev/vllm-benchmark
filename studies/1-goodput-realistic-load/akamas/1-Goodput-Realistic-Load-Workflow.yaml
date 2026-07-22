@@ -6,6 +6,12 @@ kind: workflow
 # a workflow change always means a new resource, not an in-place edit. This
 # leaves the old "1-Goodput-Realistic-Load-Workflow" (referenced by the
 # previously-renamed old study) untouched rather than deleting it.
+#
+# 2026-07-22: this -v2 workflow itself is deleted and recreated under the SAME
+# name (not bumped to -v3) to remove the "Discover" task below — unlike the
+# original workflow this replaced, -v2 never completed a full trial cycle
+# worth preserving under its own name, so there's nothing to keep it separate
+# from.
 name: 1-Goodput-Realistic-Load-Workflow-v2
 tasks:
   - name: Write config
@@ -42,25 +48,15 @@ tasks:
         key:  /work/vllm-benchmark/studies/1-goodput-realistic-load/akamas/id_rsa
       command: bash /work/vllm-benchmark/studies/1-goodput-realistic-load/k8s/apply_config.sh
 
-  - name: Discover
-    operator: Executor
-    arguments:
-      # 2026-07-21: finds THIS TRIAL'S OWN concurrency ceiling before RunTest builds
-      # a sweep around it — see README's "Per-trial saturation discovery" section.
-      # 8 grid steps x 300s = 40min expected; 60m timeout gives margin.
-      retries: 0
-      timeout: 60m
-      host:
-        hostname: toolbox
-        username: akamas
-        key:  /work/vllm-benchmark/studies/1-goodput-realistic-load/akamas/id_rsa
-      command: bash /work/vllm-benchmark/studies/1-goodput-realistic-load/k8s/run_discover_saturation.sh
-
   - name: RunTest
     operator: Executor
     arguments:
+      # 2026-07-22: the "Discover" task (per-trial saturation discovery, 2026-07-21)
+      # was removed here — the two-task split didn't work out with Akamas' own
+      # windowing model, see README's "Per-trial saturation discovery" section for
+      # the full incident. RunTest is the only phase again: 12 x 300s = 60min.
       retries: 0
-      timeout: 60m
+      timeout: 90m
       host:
         hostname: toolbox
         username: akamas

@@ -23,33 +23,22 @@ goal:
         formula: vLLM.inter_token_latency_p95 <= 300
 
 windowing:
-  # REVERTED 2026-07-21: trim -> stability, same day it was changed the other way.
-  # See README's "Per-trial saturation discovery" section for the full back-and-forth.
+  # 2026-07-22: back to a single fixed-list sweep (RunTest only) — the two-task
+  # Discover/RunTest split (2026-07-21) is reverted, see README's "Per-trial
+  # saturation discovery" section for the full incident. That split's whole
+  # reason for existing was to size the sweep per-trial; going back to one fixed
+  # list also removes the residual windowing risk that split carried (Discover's
+  # own reconnaissance traffic competing with RunTest's sweep for `stability`'s
+  # "max throughput" scan) — there's only one task generating load now, so
+  # `stability` scanning the "whole trial" is no longer a real concern.
   #
-  # RunTest's sweep no longer targets fractions of a single discovered point — it now
-  # densely samples the EXACT bracket Discover's own sla_breach_knee analysis found
-  # (max_passing_concurrency -> first_failing_concurrency, 6 levels evenly spaced
-  # across that specific gap, see 05-job.yaml). Explicit decision (user's own call,
-  # 2026-07-21): with the sweep this tightly bounded to the real transition zone
-  # instead of extending 1.3x past the ceiling into deep-saturation territory,
-  # `stability`'s "pick the max-throughput stable window" is expected to land at or
-  # very near the SLA edge within that narrow bracket, rather than sliding to an
-  # over-saturated top rung the way it did with the old wide/fixed lists.
-  #
-  # Known, accepted residual risk, not resolved, not re-litigated further per that
-  # decision: `stability` has no `task` scoping (confirmed against a real
-  # `akamas create study` rejection when an earlier draft tried `task` as a sibling
-  # of `stability`) and always scans the WHOLE trial, including the "Discover" task's
-  # own 8-step grid search that runs immediately before RunTest and sends real
-  # traffic up to concurrency 1024 to find this trial's bracket in the first place.
-  # If Discover's own reconnaissance traffic happens to produce a higher stable
-  # `prefill_token_throughput` window than anything in RunTest's tightly-bounded
-  # sweep, `stability` would score that instead — there is no way to exclude it.
-  # Revisit if real trial data shows this happening.
+  # width: 12 matches the 12 concurrency levels in the sweep (150->1024,
+  # log-spaced, see 05-job.yaml) — one sample per level, same alignment
+  # philosophy as every previous version of this sweep.
   type: stability
   stability:
     metric: vLLM.prefill_token_throughput
-    width: 6
+    width: 12
     maxStdDev: 300000000
     when:
       metric: vLLM.prefill_token_throughput

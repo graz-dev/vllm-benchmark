@@ -47,52 +47,56 @@ spec:
               set -e
               pip install --quiet aiperf==0.11.0
 
-              # 2026-07-21: concurrency is no longer a fixed list — it's built to
-              # densely sample THIS TRIAL'S OWN discovered SLA-transition bracket,
-              # not fractions of a single point. The workflow's "Discover" task
-              # (07-discover-job.yaml) runs right before this one and writes
-              # {"max_passing": ..., "first_failing": ...} to this plain JSON file
-              # (not matched by RunTest's own cleanup pattern, and not touched by
-              # anything here — Discover owns the per-trial PVC prune now, see its
-              # own script). See README's "Per-trial saturation discovery" section
-              # for why a fixed list couldn't work across every config Akamas tries:
-              # a good config's real ceiling can sit far past a bad config's, so no
-              # single static list is ever right for both — and why the ramp targets
-              # the exact [max_passing, first_failing] bracket rather than arbitrary
-              # fractions of max_passing alone: Discover's own 8-step grid is coarse
-              # (log-spaced 8-1024), so the true SLA edge can sit anywhere inside the
-              # gap between the last passing step and the first failing one: this
-              # sweep is what actually samples densely inside that specific gap.
-              CONCURRENCY_LIST=$(python3 -c "
-              import json
-              d = json.load(open('/benchmarks/discovered-concurrency.json'))
-              max_passing = d['max_passing']
-              first_failing = d['first_failing']
-              if first_failing is None:
-                  # Every grid step Discover tried already passed SLA (a genuinely
-                  # excellent config) — extrapolate a plausible failing point 50%
-                  # beyond the highest passing value so there's still a real
-                  # transition zone to sample, instead of a degenerate flat range.
-                  first_failing = max_passing * 1.5
-              if first_failing <= max_passing:
-                  # Defensive only: sla_breach_knee guarantees first_failing >
-                  # max_passing whenever both are set, but guard against a
-                  # zero/negative-width bracket anyway rather than crash the sweep.
-                  first_failing = max_passing + max(1, max_passing * 0.5)
-
-              levels = []
-              prev = 0
-              for frac in (0.0, 0.2, 0.4, 0.6, 0.8, 1.0):
-                  v = max(1, round(max_passing + frac * (first_failing - max_passing)))
-                  if v <= prev:
-                      v = prev + 1
-                  levels.append(v)
-                  prev = v
-              print(','.join(str(v) for v in levels))
-              ")
-              echo "Concurrency ramp (targeting [max_passing, first_failing] bracket): $CONCURRENCY_LIST"
+              # 2026-07-22: back to a single fixed-list phase (Discover + per-trial
+              # dynamic bracket, 2026-07-21, reverted same week) — the two-task
+              # Discover/RunTest split turned out not workable with Akamas' own
+              # windowing model, see README's "Per-trial saturation discovery"
+              # section for the full incident and why it was rolled back. RunTest
+              # is the only phase again, so it now owns the PVC prune and dataset
+              # cache prep that briefly moved to Discover.
+              find /benchmarks -mindepth 1 -maxdepth 1 -name 'aiperf-*' -exec rm -rf {} +
 
               CACHE_FILE=/benchmarks/sharegpt-cache/inputs.json
+              if [ ! -f "$CACHE_FILE" ]; then
+                echo "No cached ShareGPT inputs.json — generating once (one-time ~5min dataset validation pass)..."
+                set +e
+                aiperf profile \
+                  --model qwen2.5-7b \
+                  --tokenizer Qwen/Qwen2.5-7B-Instruct \
+                  --url http://vllm.llm-serving.svc.cluster.local:8000 \
+                  --endpoint-type chat \
+                  --streaming \
+                  --public-dataset sharegpt \
+                  --concurrency 1 \
+                  --request-count 1 \
+                  --ui simple \
+                  --output-artifact-dir /tmp/sharegpt-prep
+                set -e
+                if [ ! -f /tmp/sharegpt-prep/inputs.json ]; then
+                  echo "ERROR: prep run did not produce inputs.json — see log above" >&2
+                  exit 1
+                fi
+                mkdir -p /benchmarks/sharegpt-cache
+                cp /tmp/sharegpt-prep/inputs.json "$CACHE_FILE"
+              else
+                echo "Reusing cached ShareGPT inputs.json from $CACHE_FILE (skips dataset validation)."
+              fi
+
+              # 2026-07-22: 12 levels, log-spaced 150->1024 (ratio ~1.19x/step), 300s
+              # each = exactly 60min. Sized from this study's own real baseline data:
+              # a Discover-recipe run (since reverted, but its finding still stands)
+              # found the baseline config's own SLA-breaking bracket at
+              # concurrency 128-256 — starting this list at 150 skips levels this
+              # study already explored cleanly at length (16-96, see "Sizing the
+              # concurrency sweep" below) and spends all 12 levels at higher
+              # resolution across the range where the wall actually sits, up to
+              # 1024 (matching vLLM.max_num_seqs's own tuned domain ceiling).
+              # Known tradeoff, accepted: a tuned config with a very low
+              # max_num_seqs (its own domain allows down to 16) could wall out
+              # below 150, in which case every level here would breach SLA with no
+              # clean/degraded contrast for that specific trial.
+              CONCURRENCY_LIST="150,179,213,253,302,359,428,509,606,722,860,1024"
+
               aiperf profile \
                 --model qwen2.5-7b \
                 --tokenizer Qwen/Qwen2.5-7B-Instruct \
