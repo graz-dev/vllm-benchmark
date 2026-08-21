@@ -1,7 +1,7 @@
 kind: telemetry-instance
-system: vLLM_Benchmark_2_Larger_Model_H100
+system: vLLM_Benchmark_2_Larger_Model_G7e
 
-name: Prometheus_2_Larger_Model_H100
+name: Prometheus_2_Larger_Model_G7e
 provider: Prometheus
 config:
   address: kube-prometheus-stack-prometheus.monitoring.svc.cluster.local

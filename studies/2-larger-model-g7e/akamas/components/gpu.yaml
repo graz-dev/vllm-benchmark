@@ -1,5 +1,5 @@
 kind: component
-system: vLLM_Benchmark_2_Larger_Model_H100
+system: vLLM_Benchmark_2_Larger_Model_G7e
 
 name: gpu
 description: GPU component type

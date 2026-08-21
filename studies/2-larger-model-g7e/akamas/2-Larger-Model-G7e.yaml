@@ -1,0 +1,186 @@
+kind: study
+
+name: 2-Larger-Model-G7e
+system: vLLM_Benchmark_2_Larger_Model_G7e
+workflow: 2-Larger-Model-G7e-Workflow
+
+goal:
+  objective: maximize
+  function:
+    formula: vLLM.prefill_token_throughput + vLLM.decode_token_throughput
+  constraints:
+    absolute:
+      # Carried forward unchanged from 1-goodput-realistic-load — same interactive-chat
+      # starting-point thresholds, NOT derived from this study's own data (it hasn't run
+      # yet). Recalibrate once this study's own baseline + first sweep-driven trials
+      # report real TTFT/ITL numbers for this model/hardware, same as that study did.
+      - name: TTFT P95 interactive-chat SLA
+        formula: vLLM.time_to_first_token_p95 <= 1500
+      - name: ITL P95 interactive-chat SLA
+        formula: vLLM.inter_token_latency_p95 <= 300
+
+windowing:
+  # Same strategy as 1-goodput-realistic-load, width=12 to match this study's
+  # carried-forward 12-level concurrency sweep (150->1024, see k8s/05-job.yaml). If that
+  # sweep is recalibrated to a different level count (see study README "Prerequisites
+  # still open" #3), revisit this width too — it's coupled to the sweep, not independent.
+  type: stability
+  stability:
+    metric: vLLM.prefill_token_throughput
+    width: 12
+    maxStdDev: 300000000
+    when:
+      metric: vLLM.prefill_token_throughput
+      is: max
+
+parametersSelection:
+  # Same 14 as 1-goodput-realistic-load — see that study's README for the full
+  # per-parameter rationale, largely hardware/model-independent.
+  - name: vLLM.gpu_memory_utilization
+    domain: [0.85, 0.95]
+  - name: vLLM.max_num_seqs
+    domain: [16, 1024]
+  - name: vLLM.max_num_batched_tokens
+    domain: [256, 8192]
+  - name: vLLM.kv_cache_dtype
+    categories: [auto, fp8, fp8_e4m3, fp8_e5m2]
+  - name: vLLM.performance_mode
+    categories: [balanced, interactivity, throughput]
+  - name: vLLM.optimization_level
+    domain: [0, 3]
+  - name: vLLM.enforce_eager
+    categories: ["true", "false"]
+  - name: vLLM.scheduling_policy
+    categories: [fcfs, priority]
+  - name: vLLM.disable_cascade_attn
+    categories: ["true", "false"]
+  - name: vLLM.tokenizer_mode
+    categories: [auto, hf, slow]
+  - name: vLLM.async_scheduling
+    categories: ["true", "false"]
+  - name: vLLM.max_cudagraph_capture_size
+    domain: [1, 1024]
+  - name: vLLM.block_size
+    categories: ["16", "32", "48", "64", "80", "96", "112", "128"]
+  - name: vLLM.attention_backend
+    categories: [FLASH_ATTN, FLASHINFER, TRITON_ATTN]
+
+# vLLM.spec_method / vLLM.spec_tokens are deliberately absent from BOTH
+# parametersSelection and every step's `values` below — same as vLLM.
+# prefix_caching_hash_algo and vLLM.compilation_mode. None of the four is referenced by
+# k8s/01-deployment_template.yaml, so none of them ever renders for this study at all.
+
+parameterConstraints:
+  # Carried forward unchanged from 1-goodput-realistic-load.
+  - name: FLASH_ATTN only supports auto kv_cache_dtype
+    formula: vLLM.attention_backend != "FLASH_ATTN" || vLLM.kv_cache_dtype == "auto"
+  - name: FlashInfer only supports block_size 16, 32, or 64
+    formula: vLLM.attention_backend != "FLASHINFER" || vLLM.block_size == "16" || vLLM.block_size == "32" || vLLM.block_size == "64"
+  - name: max_num_batched_tokens must be at least max_num_seqs
+    formula: vLLM.max_num_batched_tokens >= vLLM.max_num_seqs
+  # TODO — NOT YET RE-VERIFIED FOR THIS STUDY'S HARDWARE: these 3 TRITON_ATTN+fp8
+  # exclusions were root-caused on 0-explorative's Ampere (A10G) hardware. This study
+  # runs on g7e.4xlarge (RTX PRO 6000 Blackwell, SM120 — swapped 2026-08-21 from
+  # p5.4xlarge/H100/Hopper/SM90, no regional capacity), a third, distinct architecture
+  # from both. vLLM's kernel support for SM120 has known rough edges specifically
+  # around FP8/FP4 kernel selection (code paths that assume "Blackwell == SM100"
+  # sometimes silently fall back to slower kernels instead of erroring) — do not
+  # assume H100's "native FP8, exclusion no longer needed" reasoning transfers to this
+  # GPU either. Kept here as a safe carried-forward default, NOT because it's been
+  # confirmed still necessary — re-test empirically on this hardware before removing.
+  - name: TRITON_ATTN does not support fp8 kv_cache_dtype on Ampere
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8"
+  - name: TRITON_ATTN does not support fp8_e4m3 kv_cache_dtype on Ampere
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e4m3"
+  - name: TRITON_ATTN does not support fp8_e5m2 kv_cache_dtype (query-quant bug)
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e5m2"
+
+steps:
+  - name: baseline
+    type: baseline
+    numberOfTrials: 1
+    # NOW MATCHES 1-goodput-realistic-load's baseline design (corrected 2026-08-21 —
+    # this step previously pinned all 25 other parameters explicitly via `values`
+    # instead; see git history / study README for that superseded design and why it
+    # changed: a manual smoke-test deploy against the real vllm/vllm-openai:latest
+    # image crashed with "unrecognized arguments: --max-num-partial-prefills=1
+    # --max-long-partial-prefills=1" — those two CLI flags no longer exist on this
+    # vLLM build, proving pinned-defaultValue rendering is not safe to assume stable
+    # across vLLM versions the way this study already treats attention_backend/
+    # kv_cache_dtype compatibility).
+    #
+    # doNotRenderParameters below lists every vLLM.* parameter EXCEPT
+    # gpu_memory_utilization — all 13 other tuned parameters plus all 12 pinned
+    # parameters referenced by k8s/01-deployment_template.yaml. Every excluded
+    # parameter is left unrendered, so vLLM applies its own real defaults for all of
+    # them — this is deliberately vLLM's standard, most-tested startup path, and it
+    # sidesteps flag-name drift like the partial-prefills incident above: a flag that
+    # no longer exists simply never gets rendered onto the command line at baseline.
+    #
+    # gpu_memory_utilization still needs the explicit `values:` pin (not just "leave
+    # it un-excluded and let it render at its pack default") because the pack's own
+    # defaultValue for it is 0.92, not the 0.90 this study's baseline wants.
+    #
+    # SECOND INCIDENT, same day (2026-08-21): with only gpu_memory_utilization pinned,
+    # a real deploy crashed with "ValueError: max_num_seqs (1024) exceeds available
+    # Mamba cache blocks (603)." Qwen3.8-27B is a HYBRID Mamba/attention architecture
+    # (GDN — Gated DeltaNet), not the "dense, non-MoE" pure-transformer shape this
+    # study's README originally assumed — Mamba layers use a fixed-size recurrent
+    # cache block per sequence, distinct from and additionally constrained beyond the
+    # standard KV-cache budget gpu_memory_utilization controls. Left unrendered,
+    # vLLM's own auto-selected max_num_seqs (1024) doesn't fit that budget at
+    # gpu_memory_utilization=0.90 — so "every other parameter at vLLM's own stock
+    # default is safe" (the premise 1-goodput-realistic-load's design relies on,
+    # true for Qwen2.5-7B's pure-transformer shape) does NOT hold for this model.
+    # Fixed by also pinning vLLM.max_num_seqs: 256 (comfortably under the 603-block
+    # ceiling vLLM's own error message reported at gpu_memory_utilization=0.90) —
+    # verified against the real g7e.4xlarge node: model loads, engine initializes,
+    # `/health` returns 200, and a real `/v1/chat/completions` request completes
+    # successfully. Both incidents are documented in the study README's own
+    # "Incidents" section.
+    #
+    # The `optimize` step below sets neither field, so Akamas remains fully free to
+    # pick any parametersSelection value there for max_num_seqs (and every other
+    # tuned parameter) — this restriction is baseline-only. Note this means the
+    # optimizer CAN and will explore max_num_seqs values that hit this same Mamba
+    # cache ceiling during real experiments — that's expected and desirable (the
+    # optimizer needs to learn this boundary itself via failed experiments), unlike
+    # the baseline step, which needs a known-safe fixed configuration.
+    #
+    # The workflow's FileConfigurator task sets ignoreUnsubstitutedTokens: true so it
+    # doesn't fail on the resulting unsubstituted ${vLLM.*} tokens; apply_config.sh's
+    # Step 2 then strips those literal unsubstituted lines from the rendered file
+    # before it's applied.
+    values:
+      vLLM.gpu_memory_utilization: 0.90
+      vLLM.max_num_seqs: 256
+    doNotRenderParameters:
+      - vLLM.max_num_batched_tokens
+      - vLLM.kv_cache_dtype
+      - vLLM.performance_mode
+      - vLLM.optimization_level
+      - vLLM.block_size
+      - vLLM.attention_backend
+      - vLLM.enforce_eager
+      - vLLM.scheduling_policy
+      - vLLM.disable_cascade_attn
+      - vLLM.tokenizer_mode
+      - vLLM.async_scheduling
+      - vLLM.max_cudagraph_capture_size
+      - vLLM.tensor_parallel_size
+      - vLLM.pipeline_parallel_size
+      - vLLM.data_parallel_size
+      - vLLM.enable_expert_parallel
+      - vLLM.disable_custom_all_reduce
+      - vLLM.dtype
+      - vLLM.decode_context_parallel_size
+      - vLLM.prefill_context_parallel_size
+      - vLLM.max_num_partial_prefills
+      - vLLM.max_long_partial_prefills
+      - vLLM.long_prefill_token_threshold
+      - vLLM.max_model_len
+
+  - name: optimize
+    type: optimize
+    numberOfExperiments: 1000
+    maxFailedExperiments: 200

@@ -1,0 +1,51 @@
+kind: workflow
+
+name: 2-Larger-Model-G7e-Workflow
+tasks:
+  - name: Write config
+    operator: FileConfigurator
+    arguments:
+      # ignoreUnsubstitutedTokens: true is REQUIRED for the baseline step's
+      # doNotRenderParameters (see akamas/2-Larger-Model-G7e.yaml, corrected 2026-08-21
+      # to match 1-goodput-realistic-load's design) to work at all: a parameter
+      # excluded via doNotRenderParameters has no computed value, so its ${vLLM.*}
+      # token is left unsubstituted in the rendered file. Without this flag,
+      # FileConfigurator would FAIL on every baseline trial. apply_config.sh's Step 2
+      # then strips those unsubstituted lines entirely before the file is applied.
+      ignoreUnsubstitutedTokens: true
+      source:
+        hostname: toolbox
+        username: akamas
+        key: /work/vllm-benchmark/studies/2-larger-model-g7e/akamas/id_rsa
+        path: /work/vllm-benchmark/studies/2-larger-model-g7e/k8s/01-deployment_template.yaml
+      target:
+        hostname: toolbox
+        username: akamas
+        key: /work/vllm-benchmark/studies/2-larger-model-g7e/akamas/id_rsa
+        path: /work/vllm-benchmark/studies/2-larger-model-g7e/k8s/01-deployment.yaml
+
+  - name: Apply config
+    operator: Executor
+    arguments:
+      retries: 0
+      # Longer than 1-goodput-realistic-load's 60m — this model's startupProbe alone
+      # budgets up to 20min (vs. that study's 10min) for a ~56GB weight load.
+      timeout: 75m
+      host:
+        hostname: toolbox
+        username: akamas
+        key: /work/vllm-benchmark/studies/2-larger-model-g7e/akamas/id_rsa
+      command: bash /work/vllm-benchmark/studies/2-larger-model-g7e/k8s/apply_config.sh
+
+  - name: RunTest
+    operator: Executor
+    arguments:
+      # k8s/run_test_goodput.sh itself waits up to 4500s (75m); this task's own timeout
+      # gives 15min margin above that, matching 1-goodput-realistic-load's convention.
+      retries: 0
+      timeout: 90m
+      host:
+        hostname: toolbox
+        username: akamas
+        key: /work/vllm-benchmark/studies/2-larger-model-g7e/akamas/id_rsa
+      command: bash /work/vllm-benchmark/studies/2-larger-model-g7e/k8s/run_test_goodput.sh

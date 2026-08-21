@@ -1,0 +1,150 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: llm-serving
+spec:
+  replicas: 1
+  # CONFIRMED 2026-08-21 (real manual deploy): Kubernetes' default
+  # progressDeadlineSeconds (600s/10min) is shorter than this Deployment's own
+  # startupProbe budget (up to 20min for a ~56GB weight load) — the real rollout hit
+  # "ProgressDeadlineExceeded" at ~10min while the pod was still legitimately loading
+  # (not crashed; Running throughout). This status flag doesn't kill the pod, but
+  # `kubectl rollout status` (used by k8s/apply_config.sh) treats it as a failure —
+  # in a real Akamas experiment this would fail the "Apply config" task on an
+  # otherwise-healthy, just-slow-to-start trial. Set above the startupProbe's own
+  # ~20min ceiling (120 x 10s) so the two stay consistent. Not yet checked on the
+  # other studies in this repo (none set this field either) — worth revisiting there
+  # too if their own startup time is ever close to 10min.
+  progressDeadlineSeconds: 1200
+  # Recreate terminates the old pod before creating the new one.
+  # RollingUpdate (default) would deadlock here: the new pod waits for the GPU
+  # held by the old pod, which won't be killed until the new pod is ready.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
+    spec:
+      # Prevent Kubernetes from injecting service discovery env vars (e.g. VLLM_PORT=tcp://...)
+      # which conflict with vLLM's own VLLM_PORT variable and cause a crash on startup.
+      # See: https://docs.vllm.ai/en/stable/serving/env_vars.html
+      enableServiceLinks: false
+
+      # Pin to this study's OWN node group (llm-serving-g7e, g7e.4xlarge/RTX PRO 6000
+      # Blackwell 96GB — swapped 2026-08-21 from p5.4xlarge/H100, no capacity in this
+      # region; see infra/README.md) — NOT llm-serving, the A10G group
+      # 0-explorative/1-goodput-realistic-load use. Same cluster (vllm-bench), same
+      # namespace (llm-serving), reused as-is (2026-08-20 decision: the A10G node
+      # group is currently scaled to 0, so there's no scheduling conflict either way,
+      # but this selector is what actually determines placement — don't rely on the
+      # other node group being off).
+      nodeSelector:
+        node-role: llm-serving-g7e
+
+      # Required to schedule on the tainted GPU node (same taint key/value as the
+      # A10G node group — see infra/eks/cluster.yaml).
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+
+      containers:
+        - name: vllm
+          # RESOLVED 2026-08-21 (see README "Prerequisites still open" #2): v0.22.0
+          # (pinned in 0-explorative/1-goodput-realistic-load) predates Qwen3.8-27B's
+          # 2026-08-14 release and does not support it. Verified empirically via a
+          # real manual deploy against `:latest` on this study's own g7e.4xlarge node:
+          # resolved to vLLM 0.27.1 (`pip show vllm` inside the running container),
+          # image digest sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967
+          # — confirmed identical to the `vllm/vllm-openai:v0.27.1` tag's own digest on
+          # Docker Hub (same manifest list), so pinning to that tag changes nothing
+          # about what actually ran, it just stops floating on `latest`.
+          image: vllm/vllm-openai:v0.27.1
+          command: ["vllm", "serve"]
+          args:
+            - "Qwen/Qwen3.8-27B"
+            - "--served-model-name=qwen3-8-27b"
+            - "--port=8000"
+            - "--host=0.0.0.0"
+            - "--enable-mfu-metrics"
+            # Carried forward from 1-goodput-realistic-load: prefix caching disabled
+            # entirely for this study's traffic pattern (see that study's README,
+            # "Load generator" — same ShareGPT-replay goodput methodology here).
+            - "--no-enable-prefix-caching"
+
+            # --- Tuned (parametersSelection) — same 14 as 1-goodput-realistic-load ---
+            - "--gpu-memory-utilization=0.90"
+            - "--max-num-seqs=256"
+
+            # --- Pinned (single GPU, dense non-MoE model — same reasoning as
+            #     1-goodput-realistic-load's Pinned table) ---
+
+            # --- Pinned (carried forward incident-avoidance pins — re-verify these
+            #     still apply on Hopper/this model before trusting them, see README) ---
+
+            # No --spec-method/--spec-tokens flags here at all — same approach
+            # 1-goodput-realistic-load settled on after its 5 spec-decoding crashes:
+            # the flags are simply omitted, so vLLM runs with speculative decoding off
+            # by construction. Qwen3.8-27B ships an MTP draft head, but that's
+            # deliberately not attempted until this study's own baseline is proven
+            # stable — see README "Parameters tuned".
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          # NOTE: memory request/limit sized for g7e.4xlarge's 128GiB total RAM (was
+          # 256GiB on p5.4xlarge before the 2026-08-21 hardware swap) — limit lowered
+          # from 200Gi accordingly, leaving headroom for the DCGM exporter/node-exporter
+          # DaemonSets and kubelet overhead on this node.
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+              cpu: "8"
+              memory: "32Gi"
+            limits:
+              nvidia.com/gpu: "1"
+              cpu: "14"
+              memory: "100Gi"
+
+          # Model loading: ~56GB of bf16 weights (27.8B params) vs. 1-goodput-
+          # realistic-load's ~15GB (7B) — budget more time before failing.
+          # startupProbe allows up to 20 minutes (120 x 10s).
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            failureThreshold: 120
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 30
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 60
+            failureThreshold: 3
+
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+            - name: model-cache
+              mountPath: /root/.cache/huggingface
+
+      volumes:
+        # vLLM uses shared memory for CUDA IPC handles between workers.
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 12Gi
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: vllm-model-cache

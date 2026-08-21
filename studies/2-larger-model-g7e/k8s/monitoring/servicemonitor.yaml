@@ -5,7 +5,7 @@
 # Apply after kube-prometheus-stack is installed (already installed cluster-wide from
 # 0-explorative's provisioning if reusing vllm-bench — confirm before assuming this
 # still needs a fresh install):
-#   kubectl apply -f studies/2-larger-model-h100/k8s/monitoring/servicemonitor.yaml
+#   kubectl apply -f studies/2-larger-model-g7e/k8s/monitoring/servicemonitor.yaml
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -18,7 +18,7 @@ spec:
   namespaceSelector:
     matchNames:
       - llm-serving
-  # Match the vLLM Service (studies/2-larger-model-h100/k8s/02-service.yaml) by its label.
+  # Match the vLLM Service (studies/2-larger-model-g7e/k8s/02-service.yaml) by its label.
   selector:
     matchLabels:
       app: vllm

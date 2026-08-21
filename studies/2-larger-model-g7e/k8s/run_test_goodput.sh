@@ -1,6 +1,6 @@
 #!/bin/bash
 
-BENCH_FILE=/work/vllm-benchmark/studies/2-larger-model-h100/k8s/05-job.yaml
+BENCH_FILE=/work/vllm-benchmark/studies/2-larger-model-g7e/k8s/05-job.yaml
 
 # No ConfigMap to apply separately — the load pattern is just CLI flags on the Job's
 # own command, so re-applying the Job manifest each run is enough for a manual edit

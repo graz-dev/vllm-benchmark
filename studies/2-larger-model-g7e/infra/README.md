@@ -10,21 +10,31 @@ Deliberately duplicated across studies rather than centralized (see the repo roo
 `1-goodput-realistic-load`** (same name `vllm-bench`, same region `us-east-2`) — an
 explicit user decision (2026-08-20), not an oversight. Unlike those two studies (which
 share the *same* A10G `llm-serving` node group because they use identical hardware),
-this study's hardware is different (H100 instead of A10G), so it adds its **own,
-separate managed node group** — `llm-serving-h100` (`p5.4xlarge`, 1x H100 80GB) —
-rather than reusing `llm-serving`. `provision.sh` detects whether the cluster and this
-specific node group already exist and only creates what's missing; the existing A10G
-node group is never touched by this study's provisioning.
+this study's hardware is different, so it adds its **own, separate managed node
+group** — `llm-serving-g7e` (`g7e.4xlarge`, 1x NVIDIA RTX PRO 6000 Blackwell Server
+Edition 96GB) — rather than reusing `llm-serving`. `provision.sh` detects whether the
+cluster and this specific node group already exist and only creates what's missing;
+the existing A10G node group is never touched by this study's provisioning.
+
+**Hardware swapped 2026-08-21**: originally `p5.4xlarge` (1x H100 80GB) — no capacity
+available in `us-east-2` at provisioning time. Now `g7e.4xlarge` (RTX PRO 6000
+Blackwell, GDDR7, ~1.6TB/s bandwidth vs H100's ~3.35TB/s HBM3) — a different GPU class,
+not just a smaller/bigger H100, see `cluster.yaml`'s comment on this node group and the
+study's own `README.md` for what this changes (decode-throughput bandwidth ceiling,
+SM120 kernel-maturity risk on `attention_backend`/`kv_cache_dtype`). The node group
+name `llm-serving-g7e` is kept for continuity with existing Akamas resource names and
+k8s manifests — it no longer describes the actual GPU.
 
 ## Layout
 
 - **`eks/cluster.yaml`** — the full `eksctl` `ClusterConfig` for the `vllm-bench`
   cluster, including the pre-existing `system`/`akamas`/`llm-serving` node groups (kept
   here so a from-scratch run of this script on an empty account still produces a
-  complete cluster) plus this study's own `llm-serving-h100` node group.
+  complete cluster) plus this study's own `llm-serving-g7e` node group
+  (`g7e.4xlarge`, RTX PRO 6000 Blackwell — see the hardware-swap note above).
 - **`eks/storageclass.yaml`** — the default `gp3` StorageClass (Retain reclaim policy).
 - **`eks/provision.sh`** — creates the cluster if it doesn't exist yet (all node
-  groups), or, if it already exists, creates only the missing `llm-serving-h100` node
+  groups), or, if it already exists, creates only the missing `llm-serving-g7e` node
   group via `eksctl create nodegroup --include`. Then applies StorageClasses, the
   NVIDIA device plugin, namespaces, and (once populated) this study's PVCs. Prints
   remaining manual steps at the end.
@@ -43,7 +53,7 @@ cluster from `0-explorative`'s provisioning if reusing `vllm-bench`).
 ## Usage
 
 ```bash
-cd studies/2-larger-model-h100/infra/eks
+cd studies/2-larger-model-g7e/infra/eks
 ./provision.sh                          # default region us-east-2
 ./provision.sh --region us-west-2       # different region (also edit cluster.yaml)
 ./provision.sh --profile my-aws-profile # named AWS CLI profile
@@ -52,9 +62,9 @@ cd studies/2-larger-model-h100/infra/eks
 ## Teardown
 
 ```bash
-# Stop H100 billing, keep the rest of the cluster (including the A10G node used by
-# 0-explorative/1-goodput-realistic-load) running:
-eksctl delete nodegroup --cluster vllm-bench --region us-east-2 --name llm-serving-h100 --approve
+# Stop this GPU node's billing, keep the rest of the cluster (including the A10G node
+# used by 0-explorative/1-goodput-realistic-load) running:
+eksctl delete nodegroup --cluster vllm-bench --region us-east-2 --name llm-serving-g7e --approve
 
 # Full cluster teardown — CAUTION: this also removes 0-explorative's and
 # 1-goodput-realistic-load's node groups, since they share this same cluster. Confirm

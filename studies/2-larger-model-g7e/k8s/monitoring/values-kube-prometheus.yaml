@@ -15,7 +15,7 @@
 #   helm upgrade --install kube-prometheus-stack \
 #     prometheus-community/kube-prometheus-stack \
 #     --namespace monitoring \
-#     -f studies/2-larger-model-h100/k8s/monitoring/values-kube-prometheus.yaml
+#     -f studies/2-larger-model-g7e/k8s/monitoring/values-kube-prometheus.yaml
 
 # Disable rules for control-plane components EKS does not expose.
 defaultRules:
@@ -67,8 +67,8 @@ kube-state-metrics:
 
 # node-exporter must run on GPU nodes too to capture host-level metrics.
 # The toleration lets it schedule despite the nvidia.com/gpu taint — same taint
-# key/value on both llm-serving (A10G) and llm-serving-h100, so this one toleration
-# already covers both node groups without change.
+# key/value on both llm-serving (A10G) and llm-serving-g7e (g7e.4xlarge, RTX PRO 6000
+# Blackwell), so this one toleration already covers both node groups without change.
 prometheusNodeExporter:
   tolerations:
     - key: nvidia.com/gpu

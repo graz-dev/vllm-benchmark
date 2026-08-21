@@ -343,7 +343,7 @@ of this backlog that isn't one of these two goals has moved to **Section F
 |---|-------|----------------------|---------------------|--------|
 | 1 | [0-explorative](studies/0-explorative/README.md) | vLLM | Maximize token throughput (no latency constraint, matching the pre-restructure S3.1 study it replaces) — the first study to establish a baseline, against the vLLM pack 1.3.1 (16 of 26 parameters tuned). **Result: +12.5% over baseline** (`FLASHINFER`+`fp8_e4m3`+`block_size=32`), with lower latency and higher success rate too — not a throughput/latency trade-off at this optimum. | DONE |
 | 1b | [1-goodput-realistic-load](studies/1-goodput-realistic-load/README.md) | vLLM | **Preliminary step before Goal A/B's H100 studies (2026-07-15)** — same A10G/model/vLLM version as `0-explorative` (deliberately unchanged, to isolate the variables below), but: switches load generator to `kubernetes-sigs/inference-perf` with real ShareGPT-dataset replay and a sweep/ramp load pattern instead of GuideLLM's synthetic fixed-shape saturating benchmark; tunes all 18 tunable pack v1.5.1 parameters including the new `spec_method`/`spec_tokens` (speculative decoding); goal is **goodput** (throughput subject to a P95 TTFT/ITL SLA) instead of throughput-only. Fully detailed in its own README (not Section D, which covers studies #2-#4 specifically). | TODO |
-| 2 | [2-larger-model-h100](studies/2-larger-model-h100/README.md) | vLLM | **Redirected 2026-08-20** from the original Goal-A plan below (kept as a superseded historical record in Section D) — instead of re-baselining the *same* Qwen2.5-7B-Instruct model on 8-GPU `p5.48xlarge`, this asks whether a **~4x larger model** (`Qwen/Qwen3.8-27B`, dense) on a **single-GPU** H100 (`p5.4xlarge`) improves goodput over `1-goodput-realistic-load`'s A10G result — same goodput objective/methodology, bigger model instead of more GPUs. **Does not answer Goal A/B as originally framed** — see Section D's explicit flag on studies #3/#4, which still depend on the superseded plan's baseline. | TODO |
+| 2 | [2-larger-model-g7e](studies/2-larger-model-g7e/README.md) | vLLM | **Redirected 2026-08-20** from the original Goal-A plan below (kept as a superseded historical record in Section D) — instead of re-baselining the *same* Qwen2.5-7B-Instruct model on 8-GPU `p5.48xlarge`, this asks whether a **~4x larger model** (`Qwen/Qwen3.8-27B`, dense) on a single, higher-VRAM GPU improves goodput over `1-goodput-realistic-load`'s A10G result — same goodput objective/methodology, bigger model instead of more GPUs. **Hardware swapped again 2026-08-21**: planned single-GPU H100 (`p5.4xlarge`) had no capacity in-region, now runs on `g7e.4xlarge` (1x NVIDIA RTX PRO 6000 Blackwell 96GB) — a third, distinct GPU architecture from both A10G and H100 (lower memory bandwidth than H100, less mature vLLM kernel support on this compute capability) — see the study's own README for what this changes. **Does not answer Goal A/B as originally framed** — see Section D's explicit flag on studies #3/#4, which still depend on the superseded plan's baseline. | TODO |
 | 3 | `<tbd>` | vLLM + Kubernetes (DRA, multi-GPU) | **Goal B, whole-GPU granularity** — given a target throughput, find the minimum `tensor_parallel_size` (GPU count) that satisfies it, requested dynamically via DRA. Tests H5/H6. **Setup detail: Section D, study #3.** | IDEA |
 | 4 | `<tbd>` | vLLM + GPU/Kubernetes (DRA→MIG, classic fallback) | **Goal B, sub-GPU granularity** — given a (smaller) target throughput, find the minimum MIG slice that satisfies it. Primary path via DRA; explicit classic device-plugin fallback if DRA's MIG support proves unworkable (confirmed still not officially supported upstream as of 2026-07-15). **Setup detail: Section D, study #4.** | IDEA |
 
@@ -358,13 +358,17 @@ H100; #2 re-establishes the H100 baseline and validates the new load-testing too
 should be de-risked before #4 (DRA for MIG, explicitly less mature) so any DRA/Akamas
 integration problems surface on the easier case first.
 
-**Ordering caveat, added 2026-08-20**: #2 has been redirected to `2-larger-model-h100`
-(single-GPU `p5.4xlarge`, a different model) — it no longer produces the 8-GPU
-`p5.48xlarge`/Qwen2.5-7B baseline #3 and #4 were designed to build on. Their own setup
-detail (Section D) still references "study #2's winning region" — **that dependency is
-now open/unreconciled**, not resolved by this note. Before scoping #3 or #4, either
-run the original (superseded) Study #2 plan under a new slot to produce the baseline
-they actually need, or revise #3/#4's design to not depend on it.
+**Ordering caveat, added 2026-08-20, hardware detail updated 2026-08-21**: #2 has been
+redirected to `2-larger-model-g7e` (single-GPU, a different model) — it no longer
+produces the 8-GPU `p5.48xlarge`/Qwen2.5-7B baseline #3 and #4 were designed to build
+on. Its single GPU is also no longer H100: originally `p5.4xlarge`, swapped
+2026-08-21 to `g7e.4xlarge` (RTX PRO 6000 Blackwell) for regional capacity reasons — a
+second, independent divergence from #3/#4's `p5.48xlarge`/H100 hardware, on top of the
+already-open model/topology divergence. Their own setup detail (Section D) still
+references "study #2's winning region" — **that dependency is now open/unreconciled**,
+not resolved by this note. Before scoping #3 or #4, either run the original
+(superseded) Study #2 plan under a new slot to produce the baseline they actually
+need, or revise #3/#4's design to not depend on it.
 
 ## C. Consolidated learnings
 
@@ -426,10 +430,12 @@ open- and closed-loop load, plus a saturation-sweep mode Goal A needs directly.
 
 **Hardware: NVIDIA H100 via AWS `p5.48xlarge`** (8× H100 80 GB, NVLink 4.0 — unchanged
 from the previous plan; verify current pricing/availability at study-design time).
-**Superseded for study #2 specifically (2026-08-20)**: the original single-fixed-GPU
-plan below now runs as `2-larger-model-h100` instead, on a single-GPU `p5.4xlarge`
-(1x H100 80GB), not 1 of 8 GPUs on a shared `p5.48xlarge` — see that study's own README
-and the "Study #2" subsection below for the historical plan and why it changed. Studies
+**Superseded for study #2 specifically (2026-08-20, hardware updated again 2026-08-21)**:
+the original single-fixed-GPU plan below now runs as `2-larger-model-g7e` instead, on
+a single GPU — planned as `p5.4xlarge` (1x H100 80GB), swapped 2026-08-21 to
+`g7e.4xlarge` (1x NVIDIA RTX PRO 6000 Blackwell 96GB) for regional capacity reasons —
+not 1 of 8 GPUs on a shared `p5.48xlarge` — see that study's own README and the "Study
+#2" subsection below for the historical plan and why it changed. Studies
 #3/#4 are unaffected in their own hardware choice (`p5.48xlarge`, multi-GPU via **DRA**)
 but their designs still reference study #2's original baseline — see the flag on each
 below.
@@ -491,8 +497,9 @@ Researched directly 2026-07-15 (not carried over from the earlier, less precise
 record (this repo's convention: never silently overwrite a documented plan, mark it
 superseded instead), not deleted, because studies #3/#4 below still reference it as
 their own baseline/setup precedent. The actual study #2 that now exists is
-`2-larger-model-h100` (own `README.md`), which asks a different question (bigger model
-on a single-GPU H100, not more throughput on the same model at 8-GPU scale) and does
+`2-larger-model-g7e` (own `README.md`), which asks a different question (bigger model
+on a single GPU — RTX PRO 6000 Blackwell as of 2026-08-21, not H100 — rather than more
+throughput on the same model at 8-GPU scale) and does
 **not** produce the `p5.48xlarge`/Qwen2.5-7B baseline the text below assumes. **Anyone
 scoping study #3 or #4 needs to either produce that baseline separately first, or
 revise #3/#4 to not depend on it** — not resolved by this note.
@@ -537,7 +544,7 @@ explicit latency guardrail — this repo's first study under the new validation 
 **Open dependency, flagged 2026-08-20**: this study's design below carries forward
 "study #2's winning region" and treats study #2's single-GPU ceiling as its throughput
 target's reference point — but study #2 (as originally planned, `p5.48xlarge`/
-Qwen2.5-7B) was never run; that slot now redirects to `2-larger-model-h100`, a
+Qwen2.5-7B) was never run; that slot now redirects to `2-larger-model-g7e`, a
 different model on different hardware that doesn't produce this baseline. Before
 scoping this study for real, either run the superseded Study #2 plan (above) under a
 new slot, or rework this section to reference a different/no baseline.
@@ -581,7 +588,7 @@ given fixed hardware."
 
 **Same open dependency as Study #3, flagged 2026-08-20** — this study's design also
 carries forward vLLM software parameters "from study #2's winning region," which no
-longer exists (see Study #3's flag above and `2-larger-model-h100`'s own README).
+longer exists (see Study #3's flag above and `2-larger-model-g7e`'s own README).
 
 Given a *smaller* target throughput (a lower-traffic chatbot deployment), find the
 minimum MIG slice that satisfies it — the sub-GPU-granularity complement to study #3.
@@ -662,9 +669,12 @@ minimum MIG slice that satisfies it — the sub-GPU-granularity complement to st
       their *own* `infra/eks/cluster.yaml` scaffolded for `p5.48xlarge`/H100 before
       they can run — this item resolves the general pattern, not every study's
       specific cluster yet. **Update 2026-08-20**: study #2's slot is done —
-      `2-larger-model-h100/infra/` is scaffolded, but for `p5.4xlarge` (single-GPU),
-      not `p5.48xlarge`, since that slot was redirected (see Section D). #3/#4 still
-      need their own `p5.48xlarge` scaffolding, unaffected by this redirect.
+      `2-larger-model-g7e/infra/` is scaffolded, but for a single GPU (not
+      `p5.48xlarge`), since that slot was redirected (see Section D). #3/#4 still
+      need their own `p5.48xlarge` scaffolding, unaffected by this redirect. **Update
+      2026-08-21**: study #2's single-GPU node group swapped from `p5.4xlarge`
+      (H100) to `g7e.4xlarge` (RTX PRO 6000 Blackwell) — no regional capacity for
+      `p5.4xlarge`; see the study's own README/`infra/README.md` for the full detail.
 - [ ] Scaffold and run the first real study under `studies/` via `/new-study`.
 - [x] **Pack request — implemented directly on the open branch, 2026-07-14** (pack
       version now `1.5.1`, commits `2121136`, `ba048e4`, and `9e177fd` on
@@ -841,7 +851,9 @@ completes or a concrete need arises.
 - **Kubernetes resource co-tuning (generic)** — co-tuning container CPU/memory
   requests/limits alongside vLLM parameters (tests H4, the original framing before this
   session's Goal A/B reframing). Orthogonal to both current goals; worth doing once
-  studies #2-#4 establish H100 baselines to compare against.
+  studies #2-#4 establish GPU baselines to compare against (H100 for #3/#4;
+  `2-larger-model-g7e`'s own baseline is RTX PRO 6000 Blackwell as of 2026-08-21, not
+  H100 — see Section D).
 - **Energy efficiency** — maximize tokens/s per watt (a GPU power-draw metric).
   Candidate prior, per `knowledge/notes/2026-07-ai-systems-performance-serving-tuning-checklist.md`:
   "for some models, going from a 100% to 80% power limit yields nearly the same speed
@@ -863,16 +875,19 @@ completes or a concrete need arises.
   trace/DAG replay rather than its simpler ShareGPT/synthetic generators. Revisit once
   the chatbot use case's three studies are done and validated.
 - **Speculative decoding as its own dedicated study** (beyond being one tunable
-  dimension folded into the original study #2 plan, now superseded — `2-larger-model-h100`
+  dimension folded into the original study #2 plan, now superseded — `2-larger-model-g7e`
   pins it off instead, see that study's own README) — n-gram-style speculation shows its largest gains
   on high-repetition workloads (per `knowledge/notes/2026-07-speculative-decoding-survey.md`),
   which chatbot conversation isn't especially shaped for. A RAG or code-completion use
   case (see above) would be a much stronger test of `spec_method`/`spec_tokens`'s real
   value than the chatbot use case alone.
 - **Hopper-specific FP8/NVFP4 deep dive** — H100's native FP8 Tensor Cores and NVFP4
-  support go beyond what study #2's general parameter search will naturally explore in
-  depth; a dedicated quantization-focused study could push further once the chatbot
-  baseline exists.
+  support go beyond what a general parameter search will naturally explore in depth;
+  a dedicated quantization-focused study could push further once the chatbot baseline
+  exists. **Note (2026-08-21)**: this is no longer study #2's territory — that study
+  moved off Hopper entirely to RTX PRO 6000 Blackwell (SM120, a different FP8/FP4
+  kernel-support story, see its own README) — relevant to studies #3/#4 instead, which
+  remain on `p5.48xlarge`/H100.
 - **llm-d adoption** — unchanged from Q6: N/A until real production-scale traffic
   exists (100M+ tokens/day, 100B+ parameter model, per the concrete thresholds already
   cited there). Nothing in Section D blocks adopting it later.

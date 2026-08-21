@@ -1,4 +1,4 @@
-DEPLOY_FILE=/work/vllm-benchmark/studies/2-larger-model-h100/k8s/01-deployment.yaml
+DEPLOY_FILE=/work/vllm-benchmark/studies/2-larger-model-g7e/k8s/01-deployment.yaml
 
 # --- Step 1: boolean CLI flags (same fix as prior studies) ---
 # vLLM's boolean flags (enforce-eager, disable-cascade-attn, async-scheduling,
