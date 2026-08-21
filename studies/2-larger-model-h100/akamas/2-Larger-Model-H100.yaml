@@ -1,0 +1,138 @@
+kind: study
+
+name: 2-Larger-Model-H100
+system: vLLM_Benchmark_2_Larger_Model_H100
+workflow: 2-Larger-Model-H100-Workflow
+
+goal:
+  objective: maximize
+  function:
+    formula: vLLM.prefill_token_throughput + vLLM.decode_token_throughput
+  constraints:
+    absolute:
+      # Carried forward unchanged from 1-goodput-realistic-load — same interactive-chat
+      # starting-point thresholds, NOT derived from this study's own data (it hasn't run
+      # yet). Recalibrate once this study's own baseline + first sweep-driven trials
+      # report real TTFT/ITL numbers for this model/hardware, same as that study did.
+      - name: TTFT P95 interactive-chat SLA
+        formula: vLLM.time_to_first_token_p95 <= 1500
+      - name: ITL P95 interactive-chat SLA
+        formula: vLLM.inter_token_latency_p95 <= 300
+
+windowing:
+  # Same strategy as 1-goodput-realistic-load, width=12 to match this study's
+  # carried-forward 12-level concurrency sweep (150->1024, see k8s/05-job.yaml). If that
+  # sweep is recalibrated to a different level count (see study README "Prerequisites
+  # still open" #3), revisit this width too — it's coupled to the sweep, not independent.
+  type: stability
+  stability:
+    metric: vLLM.prefill_token_throughput
+    width: 12
+    maxStdDev: 300000000
+    when:
+      metric: vLLM.prefill_token_throughput
+      is: max
+
+parametersSelection:
+  # Same 14 as 1-goodput-realistic-load — see that study's README for the full
+  # per-parameter rationale, largely hardware/model-independent.
+  - name: vLLM.gpu_memory_utilization
+    domain: [0.85, 0.95]
+  - name: vLLM.max_num_seqs
+    domain: [16, 1024]
+  - name: vLLM.max_num_batched_tokens
+    domain: [256, 8192]
+  - name: vLLM.kv_cache_dtype
+    categories: [auto, fp8, fp8_e4m3, fp8_e5m2]
+  - name: vLLM.performance_mode
+    categories: [balanced, interactivity, throughput]
+  - name: vLLM.optimization_level
+    domain: [0, 3]
+  - name: vLLM.enforce_eager
+    categories: ["true", "false"]
+  - name: vLLM.scheduling_policy
+    categories: [fcfs, priority]
+  - name: vLLM.disable_cascade_attn
+    categories: ["true", "false"]
+  - name: vLLM.tokenizer_mode
+    categories: [auto, hf, slow]
+  - name: vLLM.async_scheduling
+    categories: ["true", "false"]
+  - name: vLLM.max_cudagraph_capture_size
+    domain: [1, 1024]
+  - name: vLLM.block_size
+    categories: ["16", "32", "48", "64", "80", "96", "112", "128"]
+  - name: vLLM.attention_backend
+    categories: [FLASH_ATTN, FLASHINFER, TRITON_ATTN]
+
+# vLLM.spec_method / vLLM.spec_tokens are deliberately absent from BOTH
+# parametersSelection and every step's `values` below — same as vLLM.
+# prefix_caching_hash_algo and vLLM.compilation_mode. None of the four is referenced by
+# k8s/01-deployment_template.yaml, so none of them ever renders for this study at all.
+
+parameterConstraints:
+  # Carried forward unchanged from 1-goodput-realistic-load.
+  - name: FLASH_ATTN only supports auto kv_cache_dtype
+    formula: vLLM.attention_backend != "FLASH_ATTN" || vLLM.kv_cache_dtype == "auto"
+  - name: FlashInfer only supports block_size 16, 32, or 64
+    formula: vLLM.attention_backend != "FLASHINFER" || vLLM.block_size == "16" || vLLM.block_size == "32" || vLLM.block_size == "64"
+  - name: max_num_batched_tokens must be at least max_num_seqs
+    formula: vLLM.max_num_batched_tokens >= vLLM.max_num_seqs
+  # TODO — NOT YET RE-VERIFIED FOR THIS STUDY'S HARDWARE: these 3 TRITON_ATTN+fp8
+  # exclusions were root-caused on 0-explorative's Ampere (A10G) hardware — H100 is
+  # Hopper, with native FP8 Tensor Core support, so this exclusion may no longer be
+  # needed. Kept here as a safe carried-forward default, NOT because it's been
+  # confirmed still necessary — re-test empirically on this hardware before removing.
+  - name: TRITON_ATTN does not support fp8 kv_cache_dtype on Ampere
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8"
+  - name: TRITON_ATTN does not support fp8_e4m3 kv_cache_dtype on Ampere
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e4m3"
+  - name: TRITON_ATTN does not support fp8_e5m2 kv_cache_dtype (query-quant bug)
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e5m2"
+
+steps:
+  - name: baseline
+    type: baseline
+    numberOfTrials: 1
+    # Simple/standard baseline design (deliberately NOT replicating
+    # 1-goodput-realistic-load's elaborate doNotRenderParameters-based exclusion design,
+    # which was specific to that study) — every parameter the deployment template
+    # references is pinned to an explicit value here: the 14 tuned parameters at the
+    # vLLM pack's own declared defaultValue (i.e. vLLM's stock startup behavior, except
+    # gpu_memory_utilization, deliberately pinned to 0.90 instead of the pack's 0.92 —
+    # same reasoning as 1-goodput-realistic-load), and the 11 pinned parameters at their
+    # fixed values (single-GPU, dense-model reasoning — see study README). No
+    # doNotRenderParameters/renderParameters needed: nothing here is excluded from
+    # rendering, so every ${vLLM.*} token in the template always has a real value.
+    values:
+      vLLM.gpu_memory_utilization: 0.90
+      vLLM.max_num_seqs: 128
+      vLLM.max_num_batched_tokens: 2048
+      vLLM.kv_cache_dtype: auto
+      vLLM.performance_mode: balanced
+      vLLM.optimization_level: 2
+      vLLM.enforce_eager: "false"
+      vLLM.scheduling_policy: fcfs
+      vLLM.disable_cascade_attn: "true"
+      vLLM.tokenizer_mode: auto
+      vLLM.async_scheduling: "true"
+      vLLM.max_cudagraph_capture_size: 256
+      vLLM.block_size: "16"
+      vLLM.attention_backend: FLASH_ATTN
+      vLLM.tensor_parallel_size: 1
+      vLLM.pipeline_parallel_size: 1
+      vLLM.data_parallel_size: 1
+      vLLM.enable_expert_parallel: "false"
+      vLLM.disable_custom_all_reduce: "false"
+      vLLM.decode_context_parallel_size: 1
+      vLLM.prefill_context_parallel_size: 1
+      vLLM.max_model_len: 32768
+      vLLM.max_num_partial_prefills: 1
+      vLLM.max_long_partial_prefills: 1
+      vLLM.long_prefill_token_threshold: 0
+      vLLM.dtype: auto
+
+  - name: optimize
+    type: optimize
+    numberOfExperiments: 1000
+    maxFailedExperiments: 200

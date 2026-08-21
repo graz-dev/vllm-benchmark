@@ -13,6 +13,7 @@ what's actually been built and found).
 |---|---|---|---|
 | [0-explorative](0-explorative/README.md) | DONE | vLLM (16/26 params), Qwen2.5-7B-Instruct on 1x A10G, attention_backend/kv_cache_dtype/gpu_memory_utilization/max_num_seqs the levers that mattered | +12.5% throughput vs. baseline (`FLASHINFER`+`fp8_e4m3`+`block_size=32`), with lower latency and higher success rate too — not a trade-off |
 | [1-goodput-realistic-load](1-goodput-realistic-load/README.md) | TODO | vLLM (18/30 params incl. new `spec_method`/`spec_tokens`), same Qwen2.5-7B-Instruct/1x A10G as `0-explorative`; goal = goodput (throughput + P95 TTFT/ITL SLA); load switched to `inference-perf` + real ShareGPT + sweep/ramp | — |
+| [2-larger-model-h100](2-larger-model-h100/README.md) | TODO | vLLM (14/30 params, same as `1-goodput-realistic-load` minus `spec_method`/`spec_tokens` pinned off), `Qwen/Qwen3.8-27B` (dense, 27.8B) on 1x H100 80GB (`p5.4xlarge`, reuses the `vllm-bench` cluster via a new node group); goal = goodput, same AIPerf/ShareGPT/concurrency-sweep methodology as `1-goodput-realistic-load` carried forward pending recalibration | — |
 
 ## Maintaining this table
 

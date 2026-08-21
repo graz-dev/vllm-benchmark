@@ -1,0 +1,10 @@
+kind: component
+system: vLLM_Benchmark_2_Larger_Model_H100
+
+name: vLLM
+description: vLLM component type
+componentType: vLLM
+properties:
+  prometheus:
+    pod: .*
+    model: .*

@@ -1,0 +1,120 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aiperf-benchmark
+  namespace: llm-benchmark
+spec:
+  # Do not retry on failure — a failed benchmark should be inspected, not silently retried.
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+
+      # Run on the CPU node; the GPU node(s) are tainted exclusively for vLLM.
+      nodeSelector:
+        node-role: system
+
+      initContainers:
+        # Poll vLLM's /health endpoint until the model is fully loaded.
+        - name: wait-for-vllm
+          image: alpine:3
+          command:
+            - sh
+            - -c
+            - |
+              until wget -qO- http://vllm.llm-serving.svc.cluster.local:8000/health >/dev/null 2>&1; do
+                echo "$(date -u +%T) waiting for vLLM readiness..."
+                sleep 10
+              done
+              echo "vLLM is ready."
+
+      containers:
+        # Same tool/version as 1-goodput-realistic-load — see that study's README
+        # "Load generator" for the full reasoning (AIPerf's closed-loop --concurrency
+        # model is self-limiting near saturation, unlike open-loop rate-based tools).
+        - name: aiperf
+          image: python:3.12-slim
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              pip install --quiet aiperf==0.11.0
+
+              find /benchmarks -mindepth 1 -maxdepth 1 -name 'aiperf-*' -exec rm -rf {} +
+
+              CACHE_FILE=/benchmarks/sharegpt-cache/inputs.json
+              if [ ! -f "$CACHE_FILE" ]; then
+                echo "No cached ShareGPT inputs.json — generating once (one-time ~5min dataset validation pass)..."
+                set +e
+                aiperf profile \
+                  --model qwen3-8-27b \
+                  --tokenizer Qwen/Qwen3.8-27B \
+                  --url http://vllm.llm-serving.svc.cluster.local:8000 \
+                  --endpoint-type chat \
+                  --streaming \
+                  --public-dataset sharegpt \
+                  --concurrency 1 \
+                  --request-count 1 \
+                  --ui simple \
+                  --output-artifact-dir /tmp/sharegpt-prep
+                set -e
+                if [ ! -f /tmp/sharegpt-prep/inputs.json ]; then
+                  echo "ERROR: prep run did not produce inputs.json — see log above" >&2
+                  exit 1
+                fi
+                mkdir -p /benchmarks/sharegpt-cache
+                cp /tmp/sharegpt-prep/inputs.json "$CACHE_FILE"
+              else
+                echo "Reusing cached ShareGPT inputs.json from $CACHE_FILE (skips dataset validation)."
+              fi
+
+              # CARRIED FORWARD, NOT YET RECALIBRATED (see README "Prerequisites still
+              # open" #3): this exact list (150->1024, log-spaced, 300s/level) was
+              # calibrated for Qwen2.5-7B-Instruct on an A10G in
+              # 1-goodput-realistic-load — see that study's README, "Sizing the
+              # concurrency sweep," for the full multi-week process this took. A
+              # ~4x larger model on a materially faster GPU will almost certainly
+              # saturate at a different concurrency range. Run a manual exploratory
+              # sweep against this model/hardware before trusting this list for a
+              # real optimize step.
+              CONCURRENCY_LIST="150,179,213,253,302,359,428,509,606,722,860,1024"
+
+              aiperf profile \
+                --model qwen3-8-27b \
+                --tokenizer Qwen/Qwen3.8-27B \
+                --url http://vllm.llm-serving.svc.cluster.local:8000 \
+                --endpoint-type chat \
+                --streaming \
+                --input-file "$CACHE_FILE" \
+                --custom-dataset-type inputs_json \
+                --concurrency "$CONCURRENCY_LIST" \
+                --benchmark-duration 300 \
+                --goodput "time_to_first_token:1500 inter_token_latency:300" \
+                --ui simple \
+                --output-artifact-dir "/benchmarks/aiperf-$(date +%s)"
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+                  optional: true   # only needed for gated models, see 03-hf-secret.yaml
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              memory: "8Gi"
+          volumeMounts:
+            - name: results
+              mountPath: /benchmarks
+            - name: hf-cache
+              mountPath: /root/.cache/huggingface
+
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: aiperf-results
+        - name: hf-cache
+          persistentVolumeClaim:
+            claimName: hf-cache

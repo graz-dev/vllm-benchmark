@@ -343,20 +343,28 @@ of this backlog that isn't one of these two goals has moved to **Section F
 |---|-------|----------------------|---------------------|--------|
 | 1 | [0-explorative](studies/0-explorative/README.md) | vLLM | Maximize token throughput (no latency constraint, matching the pre-restructure S3.1 study it replaces) — the first study to establish a baseline, against the vLLM pack 1.3.1 (16 of 26 parameters tuned). **Result: +12.5% over baseline** (`FLASHINFER`+`fp8_e4m3`+`block_size=32`), with lower latency and higher success rate too — not a throughput/latency trade-off at this optimum. | DONE |
 | 1b | [1-goodput-realistic-load](studies/1-goodput-realistic-load/README.md) | vLLM | **Preliminary step before Goal A/B's H100 studies (2026-07-15)** — same A10G/model/vLLM version as `0-explorative` (deliberately unchanged, to isolate the variables below), but: switches load generator to `kubernetes-sigs/inference-perf` with real ShareGPT-dataset replay and a sweep/ramp load pattern instead of GuideLLM's synthetic fixed-shape saturating benchmark; tunes all 18 tunable pack v1.5.1 parameters including the new `spec_method`/`spec_tokens` (speculative decoding); goal is **goodput** (throughput subject to a P95 TTFT/ITL SLA) instead of throughput-only. Fully detailed in its own README (not Section D, which covers studies #2-#4 specifically). | TODO |
-| 2 | `<tbd>` | vLLM | **Goal A** — maximize throughput at fixed hardware (chatbot use case), re-baselined on H100 with a realistic dataset/load pattern and a latency SLA guardrail. **Setup detail: Section D, study #2.** | IDEA |
+| 2 | [2-larger-model-h100](studies/2-larger-model-h100/README.md) | vLLM | **Redirected 2026-08-20** from the original Goal-A plan below (kept as a superseded historical record in Section D) — instead of re-baselining the *same* Qwen2.5-7B-Instruct model on 8-GPU `p5.48xlarge`, this asks whether a **~4x larger model** (`Qwen/Qwen3.8-27B`, dense) on a **single-GPU** H100 (`p5.4xlarge`) improves goodput over `1-goodput-realistic-load`'s A10G result — same goodput objective/methodology, bigger model instead of more GPUs. **Does not answer Goal A/B as originally framed** — see Section D's explicit flag on studies #3/#4, which still depend on the superseded plan's baseline. | TODO |
 | 3 | `<tbd>` | vLLM + Kubernetes (DRA, multi-GPU) | **Goal B, whole-GPU granularity** — given a target throughput, find the minimum `tensor_parallel_size` (GPU count) that satisfies it, requested dynamically via DRA. Tests H5/H6. **Setup detail: Section D, study #3.** | IDEA |
 | 4 | `<tbd>` | vLLM + GPU/Kubernetes (DRA→MIG, classic fallback) | **Goal B, sub-GPU granularity** — given a (smaller) target throughput, find the minimum MIG slice that satisfies it. Primary path via DRA; explicit classic device-plugin fallback if DRA's MIG support proves unworkable (confirmed still not officially supported upstream as of 2026-07-15). **Setup detail: Section D, study #4.** | IDEA |
 
 Before activating a study: run `/new-study` (reads this roadmap and `knowledge/README.md`
 for you), pick a real name, and let it scaffold `studies/<name>/` from the template.
 Once scaffolded, replace the `<tbd>` row above with the real study name and a link.
-**Recommended execution order: #1b → #2 → #3 → #4** — #1b runs first, on the already-
-proven A10G hardware, to de-risk the tooling/pack changes (inference-perf, pack v1.5.1)
-before #2 also changes hardware to H100; #2 re-establishes the H100 baseline and
-validates the new load-testing tool that #3/#4 both reuse; #3 (DRA for generic
-multi-GPU, more mature per Section D's research) should be de-risked before #4 (DRA for
-MIG, explicitly less mature) so any DRA/Akamas integration problems surface on the
-easier case first.
+**Recommended execution order (original plan, now partly stale — see below): #1b → #2 →
+#3 → #4** — #1b runs first, on the already-proven A10G hardware, to de-risk the
+tooling/pack changes (inference-perf, pack v1.5.1) before #2 also changes hardware to
+H100; #2 re-establishes the H100 baseline and validates the new load-testing tool that
+#3/#4 both reuse; #3 (DRA for generic multi-GPU, more mature per Section D's research)
+should be de-risked before #4 (DRA for MIG, explicitly less mature) so any DRA/Akamas
+integration problems surface on the easier case first.
+
+**Ordering caveat, added 2026-08-20**: #2 has been redirected to `2-larger-model-h100`
+(single-GPU `p5.4xlarge`, a different model) — it no longer produces the 8-GPU
+`p5.48xlarge`/Qwen2.5-7B baseline #3 and #4 were designed to build on. Their own setup
+detail (Section D) still references "study #2's winning region" — **that dependency is
+now open/unreconciled**, not resolved by this note. Before scoping #3 or #4, either
+run the original (superseded) Study #2 plan under a new slot to produce the baseline
+they actually need, or revise #3/#4's design to not depend on it.
 
 ## C. Consolidated learnings
 
@@ -418,10 +426,13 @@ open- and closed-loop load, plus a saturation-sweep mode Goal A needs directly.
 
 **Hardware: NVIDIA H100 via AWS `p5.48xlarge`** (8× H100 80 GB, NVLink 4.0 — unchanged
 from the previous plan; verify current pricing/availability at study-design time).
-Study #2 uses 1 of its 8 GPUs classically (`nodeSelector`/resource request, no DRA
-needed — it's a single fixed GPU, not multi-GPU or MIG). Studies #3/#4 use **DRA**
-(Dynamic Resource Allocation) for dynamic device requests, per this repo's own decision
-— see the prerequisites below before either can actually run.
+**Superseded for study #2 specifically (2026-08-20)**: the original single-fixed-GPU
+plan below now runs as `2-larger-model-h100` instead, on a single-GPU `p5.4xlarge`
+(1x H100 80GB), not 1 of 8 GPUs on a shared `p5.48xlarge` — see that study's own README
+and the "Study #2" subsection below for the historical plan and why it changed. Studies
+#3/#4 are unaffected in their own hardware choice (`p5.48xlarge`, multi-GPU via **DRA**)
+but their designs still reference study #2's original baseline — see the flag on each
+below.
 
 **Hardware-baseline caveat (unchanged)**: every number `0-explorative` produced (A10G,
 Ampere) is **not** directly comparable to any study below (H100, Hopper) — different
@@ -474,7 +485,17 @@ Researched directly 2026-07-15 (not carried over from the earlier, less precise
 
 ---
 
-### Study #2 — Maximize Throughput at Fixed Hardware (Goal A, chatbot)
+### Study #2 — Maximize Throughput at Fixed Hardware (Goal A, chatbot) — SUPERSEDED 2026-08-20
+
+**This plan was never built and is now superseded** — kept below as a historical
+record (this repo's convention: never silently overwrite a documented plan, mark it
+superseded instead), not deleted, because studies #3/#4 below still reference it as
+their own baseline/setup precedent. The actual study #2 that now exists is
+`2-larger-model-h100` (own `README.md`), which asks a different question (bigger model
+on a single-GPU H100, not more throughput on the same model at 8-GPU scale) and does
+**not** produce the `p5.48xlarge`/Qwen2.5-7B baseline the text below assumes. **Anyone
+scoping study #3 or #4 needs to either produce that baseline separately first, or
+revise #3/#4 to not depend on it** — not resolved by this note.
 
 Re-baselines `0-explorative` on H100 with a realistic dataset/load pattern and an
 explicit latency guardrail — this repo's first study under the new validation framing.
@@ -513,6 +534,14 @@ explicit latency guardrail — this repo's first study under the new validation 
 
 ### Study #3 — Multi-GPU Right-Sizing via Tensor Parallelism (Goal B, whole-GPU granularity, tests H5/H6)
 
+**Open dependency, flagged 2026-08-20**: this study's design below carries forward
+"study #2's winning region" and treats study #2's single-GPU ceiling as its throughput
+target's reference point — but study #2 (as originally planned, `p5.48xlarge`/
+Qwen2.5-7B) was never run; that slot now redirects to `2-larger-model-h100`, a
+different model on different hardware that doesn't produce this baseline. Before
+scoping this study for real, either run the superseded Study #2 plan (above) under a
+new slot, or rework this section to reference a different/no baseline.
+
 Given a target throughput (a larger chatbot deployment's expected peak), find the
 minimum GPU count that satisfies it — the inverse question from study #2's "maximize
 given fixed hardware."
@@ -549,6 +578,10 @@ given fixed hardware."
   satisfies this specific load," not "what's the ceiling."
 
 ### Study #4 — MIG Right-Sizing (Goal B, sub-GPU granularity)
+
+**Same open dependency as Study #3, flagged 2026-08-20** — this study's design also
+carries forward vLLM software parameters "from study #2's winning region," which no
+longer exists (see Study #3's flag above and `2-larger-model-h100`'s own README).
 
 Given a *smaller* target throughput (a lower-traffic chatbot deployment), find the
 minimum MIG slice that satisfies it — the sub-GPU-granularity complement to study #3.
@@ -628,7 +661,10 @@ minimum MIG slice that satisfies it — the sub-GPU-granularity complement to st
       `CLAUDE.md` line updated to match). Studies #2-#4 in Section D each still need
       their *own* `infra/eks/cluster.yaml` scaffolded for `p5.48xlarge`/H100 before
       they can run — this item resolves the general pattern, not every study's
-      specific cluster yet.
+      specific cluster yet. **Update 2026-08-20**: study #2's slot is done —
+      `2-larger-model-h100/infra/` is scaffolded, but for `p5.4xlarge` (single-GPU),
+      not `p5.48xlarge`, since that slot was redirected (see Section D). #3/#4 still
+      need their own `p5.48xlarge` scaffolding, unaffected by this redirect.
 - [ ] Scaffold and run the first real study under `studies/` via `/new-study`.
 - [x] **Pack request — implemented directly on the open branch, 2026-07-14** (pack
       version now `1.5.1`, commits `2121136`, `ba048e4`, and `9e177fd` on
@@ -827,7 +863,8 @@ completes or a concrete need arises.
   trace/DAG replay rather than its simpler ShareGPT/synthetic generators. Revisit once
   the chatbot use case's three studies are done and validated.
 - **Speculative decoding as its own dedicated study** (beyond being one tunable
-  dimension folded into study #2) — n-gram-style speculation shows its largest gains
+  dimension folded into the original study #2 plan, now superseded — `2-larger-model-h100`
+  pins it off instead, see that study's own README) — n-gram-style speculation shows its largest gains
   on high-repetition workloads (per `knowledge/notes/2026-07-speculative-decoding-survey.md`),
   which chatbot conversation isn't especially shaped for. A RAG or code-completion use
   case (see above) would be a much stronger test of `spec_method`/`spec_tokens`'s real

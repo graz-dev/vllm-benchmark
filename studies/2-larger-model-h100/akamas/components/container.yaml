@@ -1,0 +1,6 @@
+kind: component
+system: vLLM_Benchmark_2_Larger_Model_H100
+
+name: container
+description: Container component type
+componentType: Kubernetes Container

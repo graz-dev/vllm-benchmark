@@ -1,0 +1,14 @@
+# Qwen/Qwen3.8-27B is ~56GB of bf16 weights (27.8B params) vs.
+# 1-goodput-realistic-load's ~15GB (Qwen2.5-7B) — sized up from that study's 25Gi.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vllm-model-cache
+  namespace: llm-serving
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3-ephemeral
+  resources:
+    requests:
+      storage: 80Gi
