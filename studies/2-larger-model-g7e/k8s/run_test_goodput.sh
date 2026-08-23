@@ -11,10 +11,11 @@ kubectl delete -f "$BENCH_FILE" ; kubectl apply -f "$BENCH_FILE"
 # wait — print the job's own container logs first, so they land in this task's stdout
 # and show up in the Akamas UI without needing separate kubectl access.
 #
-# --timeout=4500s (75m): ~5min one-time dataset-prep (first trial only) + 12 x 300s
-# levels (60min) = ~65min worst case, same budget as 1-goodput-realistic-load. Revisit
-# once this study's concurrency sweep is actually recalibrated (see README) — a
-# different level count/duration would need a different timeout here too.
+# --timeout=4500s (75m): generous upper bound, unchanged since the concurrency sweep
+# recalibration (2026-08-23, see 05-job.yaml's CONCURRENCY_LIST comment) — the current
+# exploratory sweep (6 levels x 150s = 900s/15min of load, plus ~5min one-time
+# dataset-prep on the first trial) needs nowhere near this much, but 4500s stays as a
+# safety net rather than something to tune tightly to the current sweep's exact size.
 set +e
 kubectl wait --for=condition=complete job/aiperf-benchmark -n llm-benchmark --timeout=4500s
 WAIT_EXIT=$?

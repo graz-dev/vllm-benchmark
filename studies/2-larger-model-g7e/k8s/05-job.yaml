@@ -68,16 +68,26 @@ spec:
                 echo "Reusing cached ShareGPT inputs.json from $CACHE_FILE (skips dataset validation)."
               fi
 
-              # CARRIED FORWARD, NOT YET RECALIBRATED (see README "Prerequisites still
-              # open" #3): this exact list (150->1024, log-spaced, 300s/level) was
-              # calibrated for Qwen2.5-7B-Instruct on an A10G in
-              # 1-goodput-realistic-load — see that study's README, "Sizing the
-              # concurrency sweep," for the full multi-week process this took. A
-              # ~4x larger model on a materially faster GPU will almost certainly
-              # saturate at a different concurrency range. Run a manual exploratory
-              # sweep against this model/hardware before trusting this list for a
-              # real optimize step.
-              CONCURRENCY_LIST="150,179,213,253,302,359,428,509,606,722,860,1024"
+              # EXPLORATORY SWEEP (2026-08-23), replacing the carried-forward
+              # 150->1024 list — that list's own first level (150) already caused
+              # near-total request failure (485,627 of 485,769 sent requests errored
+              # in the 300s window) once actually run against this model/hardware,
+              # which also OOM-killed this job's own container (see README
+              # "Incidents" — AIPerf accumulated in-memory records for that request
+              # volume faster than it could process them). Root cause not yet fixed
+              # (max_model_len still unrendered at baseline, defaulting to this
+              # model's native 262144 context instead of the intended 32768 — left
+              # alone for now, per explicit decision) and the sweep itself was never
+              # calibrated for this model/hardware to begin with (see README
+              # "Prerequisites still open" #3). This list instead explores UP TO the
+              # old list's own starting point (150) from much lower, to find where
+              # this specific model/hardware/max_model_len=262144 combination
+              # actually falls over: 5,15,35,70,110,150 (6 levels), 150s/level = 900s
+              # (15min) of load generation — short per-level duration is intentional
+              # here (exploratory signal, not a statistically stable baseline number).
+              # Once a real ceiling is found, replace this with a proper calibrated
+              # list before trusting any `optimize`-step result.
+              CONCURRENCY_LIST="5,15,35,70,110,150"
 
               aiperf profile \
                 --model qwen3-8-27b \
@@ -88,7 +98,7 @@ spec:
                 --input-file "$CACHE_FILE" \
                 --custom-dataset-type inputs_json \
                 --concurrency "$CONCURRENCY_LIST" \
-                --benchmark-duration 300 \
+                --benchmark-duration 150 \
                 --goodput "time_to_first_token:1500 inter_token_latency:300" \
                 --ui simple \
                 --output-artifact-dir "/benchmarks/aiperf-$(date +%s)"
@@ -99,12 +109,17 @@ spec:
                   name: hf-token
                   key: token
                   optional: true   # only needed for gated models, see 03-hf-secret.yaml
+          # Bumped 2026-08-23 (4Gi/8Gi -> 6Gi/12Gi) after this job's container was
+          # OOMKilled tracking ~485k mostly-failed request records from the old
+          # 150->1024 sweep's first level alone (see the CONCURRENCY_LIST comment
+          # above). Node (system, m6i.xlarge) has ~14.36GiB allocatable with only
+          # ~2.3GiB already committed elsewhere, so 12Gi leaves comfortable headroom.
           resources:
             requests:
               cpu: "2"
-              memory: "4Gi"
+              memory: "6Gi"
             limits:
-              memory: "8Gi"
+              memory: "12Gi"
           volumeMounts:
             - name: results
               mountPath: /benchmarks
