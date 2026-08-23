@@ -68,26 +68,30 @@ spec:
                 echo "Reusing cached ShareGPT inputs.json from $CACHE_FILE (skips dataset validation)."
               fi
 
-              # EXPLORATORY SWEEP (2026-08-23), replacing the carried-forward
-              # 150->1024 list — that list's own first level (150) already caused
-              # near-total request failure (485,627 of 485,769 sent requests errored
-              # in the 300s window) once actually run against this model/hardware,
-              # which also OOM-killed this job's own container (see README
-              # "Incidents" — AIPerf accumulated in-memory records for that request
-              # volume faster than it could process them). Root cause not yet fixed
-              # (max_model_len still unrendered at baseline, defaulting to this
-              # model's native 262144 context instead of the intended 32768 — left
-              # alone for now, per explicit decision) and the sweep itself was never
-              # calibrated for this model/hardware to begin with (see README
-              # "Prerequisites still open" #3). This list instead explores UP TO the
-              # old list's own starting point (150) from much lower, to find where
-              # this specific model/hardware/max_model_len=262144 combination
-              # actually falls over: 5,15,35,70,110,150 (6 levels), 150s/level = 900s
-              # (15min) of load generation — short per-level duration is intentional
-              # here (exploratory signal, not a statistically stable baseline number).
-              # Once a real ceiling is found, replace this with a proper calibrated
-              # list before trusting any `optimize`-step result.
-              CONCURRENCY_LIST="5,15,35,70,110,150"
+              # REVERTED 2026-08-23 to the original carried-forward list — the brief
+              # exploratory 5->150 detour (same day) turned out to be chasing the
+              # wrong cause. The actual root cause of the 100%-error-rate failures
+              # (at EVERY concurrency level tried, including 5 — ruling out overload
+              # entirely) was a STALE SHARED CACHE: this job's dataset cache file
+              # (/benchmarks/sharegpt-cache/inputs.json, on the aiperf-results PVC,
+              # shared across ALL studies in this repo's namespace/PVC-naming
+              # convention — same class of bug as vllm-model-cache's AZ/size
+              # mismatch found earlier this study) still had every request's
+              # "model" field hardcoded to "qwen2.5-7b" from `1-goodput-realistic-
+              # load`'s own July run — vLLM correctly 404'd every single request
+              # since it only serves "qwen3-8-27b". Fixed on the cluster by deleting
+              # the stale cache file so this job's own "if [ ! -f "$CACHE_FILE" ]"
+              # check regenerates it fresh with the correct model. Carried-forward,
+              # NOT YET RECALIBRATED (see README "Prerequisites still open" #3):
+              # this list (150->1024, log-spaced, 300s/level) was calibrated for
+              # Qwen2.5-7B-Instruct on an A10G in 1-goodput-realistic-load — see
+              # that study's README, "Sizing the concurrency sweep," for the full
+              # multi-week process this took. A ~4x larger, hybrid-Mamba model on
+              # different, lower-bandwidth GPU hardware will almost certainly
+              # saturate at a different concurrency range — still worth a real
+              # manual exploratory sweep before trusting this list for an
+              # `optimize` step, now that the actual blocker (stale cache) is fixed.
+              CONCURRENCY_LIST="150,179,213,253,302,359,428,509,606,722,860,1024"
 
               aiperf profile \
                 --model qwen3-8-27b \
@@ -98,7 +102,7 @@ spec:
                 --input-file "$CACHE_FILE" \
                 --custom-dataset-type inputs_json \
                 --concurrency "$CONCURRENCY_LIST" \
-                --benchmark-duration 150 \
+                --benchmark-duration 300 \
                 --goodput "time_to_first_token:1500 inter_token_latency:300" \
                 --ui simple \
                 --output-artifact-dir "/benchmarks/aiperf-$(date +%s)"

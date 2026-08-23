@@ -20,14 +20,19 @@ goal:
         formula: vLLM.inter_token_latency_p95 <= 300
 
 windowing:
-  # Same strategy as 1-goodput-realistic-load, width=12 to match this study's
-  # carried-forward 12-level concurrency sweep (150->1024, see k8s/05-job.yaml). If that
-  # sweep is recalibrated to a different level count (see study README "Prerequisites
-  # still open" #3), revisit this width too — it's coupled to the sweep, not independent.
+  # CORRECTED 2026-08-23: width lowered from 12 to 6 to actually match
+  # 1-goodput-realistic-load's own precedent — that study runs the same 12-level,
+  # 300s/level sweep (150->1024, see k8s/05-job.yaml) but itself uses width=6, not
+  # width=12 (see its own study YAML comment: "kept at the same value used for
+  # earlier 6-level sweeps rather than bumped to 12 to match the sweep's current
+  # level count"). This study's original width=12 deviated from that precedent
+  # without a stated reason. Still coupled to the sweep, not independent — if the
+  # concurrency list is ever recalibrated to a different level count (see study
+  # README "Prerequisites still open" #3), revisit this value again.
   type: stability
   stability:
     metric: vLLM.prefill_token_throughput
-    width: 12
+    width: 6
     maxStdDev: 300000000
     when:
       metric: vLLM.prefill_token_throughput
