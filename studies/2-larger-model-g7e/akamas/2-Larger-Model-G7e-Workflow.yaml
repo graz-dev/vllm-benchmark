@@ -40,10 +40,13 @@ tasks:
   - name: RunTest
     operator: Executor
     arguments:
-      # k8s/run_test_goodput.sh itself waits up to 4500s (75m); this task's own timeout
-      # gives 15min margin above that, matching 1-goodput-realistic-load's convention.
+      # Raised 2026-08-24 alongside run_test_goodput.sh's kubectl wait (4500s/75m ->
+      # 5700s/95m, see that script's own comment on the dataset-configuration-timeout
+      # incident): k8s/run_test_goodput.sh itself now waits up to 5700s (95m); this
+      # task's own timeout keeps the same 15min margin above that, matching
+      # 1-goodput-realistic-load's convention.
       retries: 0
-      timeout: 90m
+      timeout: 105m
       host:
         hostname: toolbox
         username: akamas

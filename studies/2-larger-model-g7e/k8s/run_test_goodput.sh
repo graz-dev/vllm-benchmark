@@ -11,12 +11,13 @@ kubectl delete -f "$BENCH_FILE" ; kubectl apply -f "$BENCH_FILE"
 # wait — print the job's own container logs first, so they land in this task's stdout
 # and show up in the Akamas UI without needing separate kubectl access.
 #
-# --timeout=4500s (75m): ~5min one-time dataset-prep (first trial only, or any trial
-# after the shared inputs.json cache is cleared — see 05-job.yaml's CONCURRENCY_LIST
-# comment on the stale-cache incident) + 12 x 300s levels (60min) = ~65min worst case,
-# same budget as 1-goodput-realistic-load.
+# --timeout=5700s (95m), raised 2026-08-24 alongside AIPERF_DATASET_CONFIGURATION_TIMEOUT
+# (see 05-job.yaml): up to 900s (15min) one-time dataset-prep on a cold cache + 12 x
+# 300s levels (60min) + ~20min buffer for pip-install/per-level dataset-file generation/
+# misc overhead = worst case comfortably under 95m. Was 4500s (75m, ~65min worst case)
+# before the dataset-configuration-timeout incident.
 set +e
-kubectl wait --for=condition=complete job/aiperf-benchmark -n llm-benchmark --timeout=4500s
+kubectl wait --for=condition=complete job/aiperf-benchmark -n llm-benchmark --timeout=5700s
 WAIT_EXIT=$?
 set -e
 
