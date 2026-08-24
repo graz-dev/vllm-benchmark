@@ -123,6 +123,16 @@ spec:
             # a no-op once inputs.json exists again.
             - name: AIPERF_DATASET_CONFIGURATION_TIMEOUT
               value: "900"
+            # Added 2026-08-24, same day: AIPerf itself failed immediately on
+            # startup ("AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT: 600.0 must be
+            # greater than or equal to AIPERF_DATASET_CONFIGURATION_TIMEOUT:
+            # 900.0") — this env var isn't a CLI flag (doesn't show up in `aiperf
+            # profile --help`), it's an internal validation constraint between the
+            # two, defaulting to 600s. Raised above 900 with margin so it stays
+            # valid even if AIPERF_DATASET_CONFIGURATION_TIMEOUT is ever raised
+            # again.
+            - name: AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT
+              value: "1200"
           # Bumped 2026-08-23 (4Gi/8Gi -> 6Gi/12Gi) after this job's container was
           # OOMKilled tracking ~485k mostly-failed request records from the old
           # 150->1024 sweep's first level alone (see the CONCURRENCY_LIST comment
