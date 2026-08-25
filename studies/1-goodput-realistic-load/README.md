@@ -1,7 +1,8 @@
 # 1-Goodput-Realistic-Load
 
-**Status:** TODO
-**Dates:** —
+**Status:** DONE
+**Dates:** 2026-07-16 – 2026-08-25 (stopped by user at 32 experiments, well short of
+the configured 1000-experiment budget)
 
 ## Objective
 
@@ -919,8 +920,83 @@ akamas start study "1-Goodput-Realistic-Load"
 
 ## Results
 
-<Filled in by the study-recap skill once the study finishes.>
+**Data source**: `akamas export study "Maximize LLM inference tokens/sec with TTFT
+constraint" studies/1-goodput-realistic-load/results/export.gz` (Akamas-side study
+name differs from this repo's folder name — same study, `description` field in the
+export confirms `1-Goodput-Realistic-Load`). Stopped by the user at **32 total
+experiments** (1 baseline + 30 optimize, 1 of which produced no usable result — see
+below) — well short of the configured `numberOfExperiments: 1000` and nowhere near
+`maxFailedExperiments: 200`, so this was a deliberate early stop, not a
+budget/failure limit.
+
+**Headline finding: no optimize-step experiment satisfied both latency SLA
+constraints.** All 29 scored optimize experiments (out of 30; 1 produced no usable
+result) violated at least one of `vLLM.time_to_first_token_p95 <= 1500` /
+`vLLM.inter_token_latency_p95 <= 300` — including the highest-throughput ones. The
+**baseline is the only SLA-compliant data point in the entire study**:
+
+| | `vLLM.prefill_token_throughput + decode_token_throughput` | TTFT P95 | ITL P95 | SLA |
+|---|---|---|---|---|
+| **Baseline** (experiment 2) | **2152.0 tokens/s** | within 1500ms | within 300ms | ✅ compliant |
+| Best raw throughput (experiment 30) | 3131.1 tokens/s (+45.5% vs baseline) | ~2241ms (741ms over) | ~305ms (5ms over) | ❌ violates both |
+| 2nd best (experiment 22) | 3129.4 tokens/s (+45.4%) | ~2249ms (749ms over) | ~310ms (10ms over) | ❌ violates both |
+| 3rd best (experiment 32) | 3109.4 tokens/s (+44.5%) | ~2005ms (505ms over) | ~330ms (30ms over) | ❌ violates both |
+
+Since `goal.constraints` violations disqualify a trial regardless of raw throughput,
+there is **no valid "best configuration"** to report from the `optimize` step under
+this study's own goal as configured — the baseline (untouched vLLM defaults except
+`gpu_memory_utilization=0.90`) remains the only result that actually meets the
+stated goodput definition.
+
+**Pattern across the top raw-throughput trials** (5 highest scores, all invalid):
+consistently `vLLM.attention_backend=FLASHINFER`, `vLLM.kv_cache_dtype=fp8`,
+`vLLM.async_scheduling=true` (4 of 5), `vLLM.gpu_memory_utilization` clustered
+0.86–0.93 (upper half of the tuned `[0.85, 0.95]` domain), `vLLM.max_num_seqs` in the
+600–840 range. `vLLM.scheduling_policy` split evenly between `fcfs`/`priority` — no
+clear winner there.
+
+**The binding constraint is TTFT, not ITL.** Across every one of the top 5 trials,
+ITL P95 exceeds its 300ms budget by only 3–30ms (1–10% over) — essentially at the
+edge — while TTFT P95 exceeds its 1500ms budget by 505–919ms (33–61% over) — a large,
+consistent margin. Throughput-maximizing configurations on this hardware trade away
+queueing/prefill latency (TTFT) far more than they trade away per-token decode
+latency (ITL).
+
+**1 of 30 optimize experiments (experiment 6) produced no usable result** (empty
+score, no constraint-violation record either) — most likely the `stability`
+windowing (`width: 6`) never found a stable window for that trial's parameter
+combination, rather than a workload crash (no error captured in that experiment's
+own result message). Not investigated further — a single occurrence out of 30, not a
+pattern.
 
 ## Conclusions
 
-<Filled in by the study-recap skill once the study finishes.>
+1. **The 1500ms TTFT / 300ms ITL thresholds (flagged from the start as "a starting
+   point, not final" — see "Latency SLA thresholds" above) are too strict for this
+   hardware/model pushed toward its throughput ceiling.** Every configuration the
+   optimizer found that meaningfully beat baseline throughput did so by missing TTFT
+   by 500-900ms, not by a marginal amount. This isn't evidence the vLLM pack or the
+   study's parameter surface is broken — it's evidence the SLA pair itself doesn't
+   describe an achievable operating point on Qwen2.5-7B/A10G at throughput levels
+   above baseline. A follow-up study (or a revised goal on a fresh study — this one's
+   `goal`/`windowing`/`parametersSelection` can't be hand-edited on an
+   already-run study, per this repo's Akamas-edit rules) should either loosen TTFT
+   specifically (ITL is already close to workable) or reframe the goal as **explicit
+   throughput/TTFT Pareto exploration** (`type: optimize` without a hard TTFT
+   constraint, reporting the frontier) rather than a single constrained maximum.
+2. **FLASHINFER + fp8 kv_cache_dtype + high gpu_memory_utilization + high
+   max_num_seqs is this hardware's throughput-maximizing region** — consistent with
+   `0-explorative`'s own finding (`FLASHINFER`+`fp8_e4m3` was that study's winner
+   too), now confirmed under a realistic ShareGPT/goodput methodology rather than
+   `0-explorative`'s synthetic throughput-only benchmark. Generalizable within "same
+   GPU family, similar model size" — not yet tested on different hardware.
+3. **TTFT degrades faster than ITL as configurations push toward max throughput**, at
+   least for this stack. Worth checking whether this generalizes to other
+   hardware/models before treating it as a general vLLM tuning principle — plausibly
+   specific to how `0-explorative`/this study's A10G handles prefill-heavy load at
+   high concurrency.
+4. **This study never got a genuinely valid comparison point beyond the baseline** —
+   practically, that means `2-larger-model-g7e` (which carried forward this study's
+   goal formula, thresholds, and 14-parameter surface as a starting point) inherited
+   an SLA pair that was already known to be unachievable-above-baseline here, before
+   even accounting for the hardware/model change. Worth flagging there too.

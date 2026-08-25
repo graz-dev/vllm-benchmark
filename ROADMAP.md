@@ -342,8 +342,8 @@ of this backlog that isn't one of these two goals has moved to **Section F
 | # | Study | Target component(s) | Objective (sketch) | Status |
 |---|-------|----------------------|---------------------|--------|
 | 1 | [0-explorative](studies/0-explorative/README.md) | vLLM | Maximize token throughput (no latency constraint, matching the pre-restructure S3.1 study it replaces) — the first study to establish a baseline, against the vLLM pack 1.3.1 (16 of 26 parameters tuned). **Result: +12.5% over baseline** (`FLASHINFER`+`fp8_e4m3`+`block_size=32`), with lower latency and higher success rate too — not a throughput/latency trade-off at this optimum. | DONE |
-| 1b | [1-goodput-realistic-load](studies/1-goodput-realistic-load/README.md) | vLLM | **Preliminary step before Goal A/B's H100 studies (2026-07-15)** — same A10G/model/vLLM version as `0-explorative` (deliberately unchanged, to isolate the variables below), but: switches load generator to `kubernetes-sigs/inference-perf` with real ShareGPT-dataset replay and a sweep/ramp load pattern instead of GuideLLM's synthetic fixed-shape saturating benchmark; tunes all 18 tunable pack v1.5.1 parameters including the new `spec_method`/`spec_tokens` (speculative decoding); goal is **goodput** (throughput subject to a P95 TTFT/ITL SLA) instead of throughput-only. Fully detailed in its own README (not Section D, which covers studies #2-#4 specifically). | TODO |
-| 2 | [2-larger-model-g7e](studies/2-larger-model-g7e/README.md) | vLLM | **Redirected 2026-08-20** from the original Goal-A plan below (kept as a superseded historical record in Section D) — instead of re-baselining the *same* Qwen2.5-7B-Instruct model on 8-GPU `p5.48xlarge`, this asks whether a **~4x larger model** (`Qwen/Qwen3.8-27B`, dense) on a single, higher-VRAM GPU improves goodput over `1-goodput-realistic-load`'s A10G result — same goodput objective/methodology, bigger model instead of more GPUs. **Hardware swapped again 2026-08-21**: planned single-GPU H100 (`p5.4xlarge`) had no capacity in-region, now runs on `g7e.4xlarge` (1x NVIDIA RTX PRO 6000 Blackwell 96GB) — a third, distinct GPU architecture from both A10G and H100 (lower memory bandwidth than H100, less mature vLLM kernel support on this compute capability) — see the study's own README for what this changes. **Does not answer Goal A/B as originally framed** — see Section D's explicit flag on studies #3/#4, which still depend on the superseded plan's baseline. | TODO |
+| 1b | [1-goodput-realistic-load](studies/1-goodput-realistic-load/README.md) | vLLM | **Preliminary step before Goal A/B's H100 studies (2026-07-15)** — same A10G/model/vLLM version as `0-explorative` (deliberately unchanged, to isolate the variables below), but: switched load generator to NVIDIA AIPerf (via `inference-perf` initially, replaced 2026-07-17) with real ShareGPT-dataset replay and a 7-level concurrency sweep instead of GuideLLM's synthetic fixed-shape saturating benchmark; tuned 14 pack v1.5.1 parameters (`spec_method`/`spec_tokens` dropped after 5 crashes); goal is **goodput** (throughput subject to a P95 TTFT/ITL SLA) instead of throughput-only. **Result: no `optimize`-step trial satisfied the SLA** — stopped by the user at 32 experiments; baseline (2152 tokens/s) is the only SLA-compliant data point; best raw throughput 3131 tokens/s (+45.5%, `FLASHINFER`+`fp8`+high `gpu_memory_utilization`/`max_num_seqs`) misses TTFT by 500-900ms. The 1500ms/300ms SLA pair (already flagged as a starting point, not final) proved too strict above baseline for this hardware — see the study's own README "Conclusions". | DONE |
+| 2 | [2-larger-model-g7e](studies/2-larger-model-g7e/README.md) | vLLM | **Redirected 2026-08-20** from the original Goal-A plan below (kept as a superseded historical record in Section D) — instead of re-baselining the *same* Qwen2.5-7B-Instruct model on 8-GPU `p5.48xlarge`, this asks whether a **~4x larger model** (`Qwen/Qwen3.8-27B`, dense) on a single, higher-VRAM GPU improves goodput over `1-goodput-realistic-load`'s A10G result — same goodput objective/methodology, bigger model instead of more GPUs. **Hardware swapped again 2026-08-21**: planned single-GPU H100 (`p5.4xlarge`) had no capacity in-region, now runs on `g7e.4xlarge` (1x NVIDIA RTX PRO 6000 Blackwell 96GB) — a third, distinct GPU architecture from both A10G and H100 (lower memory bandwidth than H100, less mature vLLM kernel support on this compute capability) — see the study's own README for what this changes. **Does not answer Goal A/B as originally framed** — see Section D's explicit flag on studies #3/#4, which still depend on the superseded plan's baseline. **Inherited-SLA flag (2026-08-25)**: this study carried forward `1-goodput-realistic-load`'s same 1500ms TTFT/300ms ITL thresholds and goal formula — but that study's own now-completed result found those thresholds unachievable above its baseline on A10G (see row 1b). Not yet known whether the same SLA pair is achievable on this study's different model/hardware; worth checking early rather than assuming it transfers. | TODO |
 | 3 | `<tbd>` | vLLM + Kubernetes (DRA, multi-GPU) | **Goal B, whole-GPU granularity** — given a target throughput, find the minimum `tensor_parallel_size` (GPU count) that satisfies it, requested dynamically via DRA. Tests H5/H6. **Setup detail: Section D, study #3.** | IDEA |
 | 4 | `<tbd>` | vLLM + GPU/Kubernetes (DRA→MIG, classic fallback) | **Goal B, sub-GPU granularity** — given a (smaller) target throughput, find the minimum MIG slice that satisfies it. Primary path via DRA; explicit classic device-plugin fallback if DRA's MIG support proves unworkable (confirmed still not officially supported upstream as of 2026-07-15). **Setup detail: Section D, study #4.** | IDEA |
 
@@ -391,6 +391,30 @@ need, or revise #3/#4's design to not depend on it.
   future studies with a similarly high `max_num_seqs` ceiling should watch for this
   specific failure mode too, not just the KV-cache-deficit OOM the domain narrowing
   targets.
+- **`studies/1-goodput-realistic-load`** (Qwen2.5-7B-Instruct, single A10G, vLLM
+  1.5.1, stopped 2026-08-25 at 32 experiments): **a latency SLA pair set as "a
+  reasonable industry starting point" without being derived from this stack's own
+  data turned out to be unachievable above baseline** — every optimize-step
+  configuration that beat baseline throughput missed the 1500ms TTFT budget by
+  500-900ms (33-61% over), while the 300ms ITL budget was only barely missed (1-10%
+  over) by the same trials. Two takeaways for future goodput-style studies: (1) TTFT
+  and ITL don't degrade at the same rate as configurations push toward max
+  throughput — don't assume a single "how strict" dial, check both independently
+  before picking thresholds; (2) if a study's baseline is the *only* SLA-compliant
+  result across dozens of experiments, that's a signal the thresholds themselves are
+  the constraint, not that the parameter surface has no room to improve — consider a
+  Pareto-frontier framing (report throughput vs. TTFT trade-off curve) instead of a
+  single hard-constrained maximum when there's no independently-justified SLA
+  number to anchor to.
+- **`studies/1-goodput-realistic-load`**: reconfirms `0-explorative`'s
+  `FLASHINFER`+fp8-family `kv_cache_dtype` finding under a completely different
+  methodology (real ShareGPT/goodput-constrained optimization vs. synthetic
+  fixed-shape/throughput-only) — the 5 highest raw-throughput trials all converged
+  on `FLASHINFER`+`fp8`, plus high `gpu_memory_utilization` (upper half of
+  `[0.85,0.95]`) and high `max_num_seqs` (600-840 within `[16,1024]`). Two
+  independent studies now agree on this attention-backend/quantization pairing for
+  Qwen2.5-7B/A10G — worth treating as a reasonably solid default to carry into
+  future studies on similar hardware, not just a per-study fluke.
 
 ## D. Incremental Study Plan — Setup Detail (Infra / Study / Load config)
 
