@@ -1,7 +1,7 @@
 # 1-Goodput-Realistic-Load
 
 **Status:** DONE
-**Dates:** 2026-07-16 – 2026-08-25 (stopped by user at 32 experiments, well short of
+**Dates:** 2026-07-20 – 2026-07-21 (stopped by user at 31 experiments, well short of
 the configured 1000-experiment budget)
 
 ## Objective
@@ -923,80 +923,110 @@ akamas start study "1-Goodput-Realistic-Load"
 **Data source**: `akamas export study "Maximize LLM inference tokens/sec with TTFT
 constraint" studies/1-goodput-realistic-load/results/export.gz` (Akamas-side study
 name differs from this repo's folder name — same study, `description` field in the
-export confirms `1-Goodput-Realistic-Load`). Stopped by the user at **32 total
-experiments** (1 baseline + 30 optimize, 1 of which produced no usable result — see
-below) — well short of the configured `numberOfExperiments: 1000` and nowhere near
+export confirms `1-Goodput-Realistic-Load`). Stopped by the user after **31 total
+experiments** (1 baseline + 30 optimize, 1 of which produced no usable result) — well
+short of the configured `numberOfExperiments: 1000` and nowhere near
 `maxFailedExperiments: 200`, so this was a deliberate early stop, not a
 budget/failure limit.
 
-**Headline finding: no optimize-step experiment satisfied both latency SLA
-constraints.** All 29 scored optimize experiments (out of 30; 1 produced no usable
-result) violated at least one of `vLLM.time_to_first_token_p95 <= 1500` /
-`vLLM.inter_token_latency_p95 <= 300` — including the highest-throughput ones. The
-**baseline is the only SLA-compliant data point in the entire study**:
+**Experiment-numbering correction (worth recording for future analysis of this
+bundle)**: `last-optimization.json`'s `scores`/`parametersAssignments`/
+`metricConstraintsViolations` arrays do **not** include the baseline trial — array
+index `i` maps to true experiment `i + 2` (not `i + 1`, despite
+`baselineExperimentIndex: 0` in that same file, which turned out not to mean "array
+position 0 is the baseline"). Confirmed by cross-referencing every array score
+against `logs.json`'s own directly-tagged `"Computed score for trial N.1 is ..."`
+messages — all 29 matched exactly once the `+2` offset was applied. Also,
+`metricConstraintsViolations[i]` does **not** describe whether that experiment's
+*reported* score violates the SLA — every experiment's actual score comes from a
+`stability`-selected sub-window that `logs.json` explicitly confirms as `"Constraints
+in window are SATISFIED"`; the violations array reflects a different (worse) window
+within the same trial, not the one that was scored. Both of these cost real rework —
+see "Data-quality notes" below.
 
-| | `vLLM.prefill_token_throughput + decode_token_throughput` | TTFT P95 | ITL P95 | SLA |
+**Headline finding: every scored experiment — baseline and all 29 optimize trials —
+found an SLA-compliant operating point.** The concurrency sweep design means each
+trial's telemetry spans a full 150→1024 ramp; Akamas' `stability` windowing searches
+that ramp for the best throughput sub-window where both
+`vLLM.time_to_first_token_p95 <= 1500` and `vLLM.inter_token_latency_p95 <= 300` hold,
+and reports *that* as the trial's score — not an average across the whole sweep
+(including its later, SLA-breaking, high-concurrency portion).
+
+| | Experiment | `prefill_token_throughput + decode_token_throughput` | vs. baseline | SLA |
 |---|---|---|---|---|
-| **Baseline** (experiment 2) | **2152.0 tokens/s** | within 1500ms | within 300ms | ✅ compliant |
-| Best raw throughput (experiment 30) | 3131.1 tokens/s (+45.5% vs baseline) | ~2241ms (741ms over) | ~305ms (5ms over) | ❌ violates both |
-| 2nd best (experiment 22) | 3129.4 tokens/s (+45.4%) | ~2249ms (749ms over) | ~310ms (10ms over) | ❌ violates both |
-| 3rd best (experiment 32) | 3109.4 tokens/s (+44.5%) | ~2005ms (505ms over) | ~330ms (30ms over) | ❌ violates both |
+| **Baseline** | 1 | **2152.0 tokens/s** | — | ✅ compliant |
+| **Best (= `study.bestExperiment`)** | 29 | **3131.1 tokens/s** | **+45.5%** | ✅ compliant |
+| 2nd best | 21 | 3129.4 tokens/s | +45.4% | ✅ compliant |
+| 3rd best | 31 | 3109.4 tokens/s | +44.5% | ✅ compliant |
+| 4th best | 22 | 3103.4 tokens/s | +44.2% | ✅ compliant |
+| 5th best | 12 | 2962.1 tokens/s | +37.6% | ✅ compliant |
 
-Since `goal.constraints` violations disqualify a trial regardless of raw throughput,
-there is **no valid "best configuration"** to report from the `optimize` step under
-this study's own goal as configured — the baseline (untouched vLLM defaults except
-`gpu_memory_utilization=0.90`) remains the only result that actually meets the
-stated goodput definition.
+**Best configuration (experiment 29)**: `attention_backend=FLASHINFER`,
+`kv_cache_dtype=fp8`, `gpu_memory_utilization=0.916`, `max_num_seqs=772`,
+`block_size=16`, `max_num_batched_tokens=2554`, `scheduling_policy=priority`,
+`async_scheduling=true`, `enforce_eager=false`, `optimization_level=1`,
+`max_cudagraph_capture_size=535`. Full parameter set for every scored experiment is
+in `results/trials.csv`.
 
-**Pattern across the top raw-throughput trials** (5 highest scores, all invalid):
-consistently `vLLM.attention_backend=FLASHINFER`, `vLLM.kv_cache_dtype=fp8`,
-`vLLM.async_scheduling=true` (4 of 5), `vLLM.gpu_memory_utilization` clustered
-0.86–0.93 (upper half of the tuned `[0.85, 0.95]` domain), `vLLM.max_num_seqs` in the
-600–840 range. `vLLM.scheduling_policy` split evenly between `fcfs`/`priority` — no
-clear winner there.
+**Pattern across the top 5 trials**: all five independently converged on
+`attention_backend=FLASHINFER` + `kv_cache_dtype=fp8`, `gpu_memory_utilization`
+clustered 0.86–0.93 (upper half of the tuned `[0.85, 0.95]` domain), and
+`max_num_seqs` in the 615–840 range (well above baseline's pack-default 256).
+`async_scheduling=true` in 4 of 5. `scheduling_policy` and `enforce_eager` show no
+consistent winner across the top 5.
 
-**The binding constraint is TTFT, not ITL.** Across every one of the top 5 trials,
-ITL P95 exceeds its 300ms budget by only 3–30ms (1–10% over) — essentially at the
-edge — while TTFT P95 exceeds its 1500ms budget by 505–919ms (33–61% over) — a large,
-consistent margin. Throughput-maximizing configurations on this hardware trade away
-queueing/prefill latency (TTFT) far more than they trade away per-token decode
-latency (ITL).
+**1 of 30 optimize experiments (true experiment 5) produced no usable score** — not
+investigated further (a single occurrence, and `study.json` reports
+`experimentsWithErrors: 0`, meaning this wasn't a workflow crash — most likely a
+window that never satisfied the stability/constraint search for that specific
+parameter combination).
 
-**1 of 30 optimize experiments (experiment 6) produced no usable result** (empty
-score, no constraint-violation record either) — most likely the `stability`
-windowing (`width: 6`) never found a stable window for that trial's parameter
-combination, rather than a workload crash (no error captured in that experiment's
-own result message). Not investigated further — a single occurrence out of 30, not a
-pattern.
+### Data-quality notes
+
+- The `analyze_export.py` script bundled with the `akamas-study-analyzer` plugin
+  applies the `array_index + 1 = experiment` mapping its own reference doc documents
+  — **that mapping is wrong for this bundle** (confirmed `+2`, baseline excluded from
+  the arrays entirely). Using it produced an entirely fabricated first draft of this
+  section (every trial appearing to violate the SLA, wrong scores attached to wrong
+  experiment numbers) that was caught only by manually cross-checking against
+  `logs.json`'s directly-tagged per-experiment log lines. Flagged back to the plugin's
+  own `reference/export-schema.md` (see that file's "Known gaps" section) — **any
+  future analysis of an Akamas export bundle should verify the array-to-experiment
+  offset against `logs.json` before trusting either `last-optimization.json`'s arrays
+  or a tool built on the `+1` assumption.**
+- TTFT/ITL P95 exact values for the winning window aren't restated here — `logs.json`
+  confirms compliance qualitatively ("Constraints in window are SATISFIED") but
+  extracting the precise per-trial TTFT/ITL numbers would require correlating the
+  `stability`-selected window's timestamps (also in `logs.json`) against the raw
+  `metrics-vLLM-time_to_first_token_p95.json`/`metrics-vLLM-inter_token_latency_p95.json`
+  timeseries — not done here; both raw files are in `results/export.gz` for anyone
+  who needs the exact numbers.
 
 ## Conclusions
 
-1. **The 1500ms TTFT / 300ms ITL thresholds (flagged from the start as "a starting
-   point, not final" — see "Latency SLA thresholds" above) are too strict for this
-   hardware/model pushed toward its throughput ceiling.** Every configuration the
-   optimizer found that meaningfully beat baseline throughput did so by missing TTFT
-   by 500-900ms, not by a marginal amount. This isn't evidence the vLLM pack or the
-   study's parameter surface is broken — it's evidence the SLA pair itself doesn't
-   describe an achievable operating point on Qwen2.5-7B/A10G at throughput levels
-   above baseline. A follow-up study (or a revised goal on a fresh study — this one's
-   `goal`/`windowing`/`parametersSelection` can't be hand-edited on an
-   already-run study, per this repo's Akamas-edit rules) should either loosen TTFT
-   specifically (ITL is already close to workable) or reframe the goal as **explicit
-   throughput/TTFT Pareto exploration** (`type: optimize` without a hard TTFT
-   constraint, reporting the frontier) rather than a single constrained maximum.
-2. **FLASHINFER + fp8 kv_cache_dtype + high gpu_memory_utilization + high
-   max_num_seqs is this hardware's throughput-maximizing region** — consistent with
-   `0-explorative`'s own finding (`FLASHINFER`+`fp8_e4m3` was that study's winner
-   too), now confirmed under a realistic ShareGPT/goodput methodology rather than
-   `0-explorative`'s synthetic throughput-only benchmark. Generalizable within "same
-   GPU family, similar model size" — not yet tested on different hardware.
-3. **TTFT degrades faster than ITL as configurations push toward max throughput**, at
-   least for this stack. Worth checking whether this generalizes to other
-   hardware/models before treating it as a general vLLM tuning principle — plausibly
-   specific to how `0-explorative`/this study's A10G handles prefill-heavy load at
-   high concurrency.
-4. **This study never got a genuinely valid comparison point beyond the baseline** —
-   practically, that means `2-larger-model-g7e` (which carried forward this study's
-   goal formula, thresholds, and 14-parameter surface as a starting point) inherited
-   an SLA pair that was already known to be unachievable-above-baseline here, before
-   even accounting for the hardware/model change. Worth flagging there too.
+1. **A goodput-constrained optimize step, run against a load pattern that sweeps
+   concurrency within each trial, can find a genuinely SLA-compliant configuration
+   that beats baseline throughput** — not a given going in; this study's own design
+   (sweep-then-select-the-compliant-window) is what made it possible, rather than
+   averaging across a trial that includes a saturating tail. `+45.5%` goodput over
+   baseline, still within the 1500ms/300ms SLA, is a real, usable result — worth
+   carrying `attention_backend=FLASHINFER` + `kv_cache_dtype=fp8` +
+   `gpu_memory_utilization≈0.90-0.92` + `max_num_seqs≈750-800` forward as a strong
+   starting point for future studies on similar hardware/model size, not just a
+   per-study fluke (5 independent top trials converged on the same region).
+2. **This reconfirms `0-explorative`'s own `FLASHINFER`+fp8-family finding** under a
+   completely different methodology (real ShareGPT/goodput-constrained optimization
+   vs. synthetic fixed-shape/throughput-only) — two independent studies now agree on
+   this attention-backend/quantization pairing for Qwen2.5-7B/A10G.
+3. **Export-bundle analysis has a real, non-obvious pitfall**: the array-index-to-
+   experiment-number offset is not a fixed constant across Akamas study bundles (this
+   one needed `+2`, not the `+1` the `akamas-study-analyzer` plugin's reference doc
+   assumed from a single prior bundle it was built against), and a "violations" array
+   does not necessarily describe the *scored* window when `stability` windowing is in
+   play. Any future study's export analysis should re-verify both against `logs.json`
+   before trusting either the raw arrays or a tool that assumes a fixed mapping.
+4. **`2-larger-model-g7e` inherited this study's goal formula and 1500ms/300ms SLA
+   thresholds as a starting point** — now confirmed achievable-and-beatable here, so
+   there's no reason to revisit those thresholds on that study's account specifically;
+   whether they transfer to its different model/hardware is still an open, separate
+   question (see that study's own README).

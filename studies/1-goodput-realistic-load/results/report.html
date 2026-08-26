@@ -1,0 +1,306 @@
+<title>1-Goodput-Realistic-Load Findings</title>
+<style>
+.viz-root {
+  color-scheme: light;
+  --surface-0:      #ffffff;
+  --surface-1:      #fcfcfb;
+  --surface-2:      #f3f2ef;
+  --border:         #e2e0da;
+  --text-primary:   #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted:     #85837c;
+  --series-blue:    #2a78d6;
+  --series-orange:  #eb6834;
+  --series-aqua:    #1baf7a;
+  --series-yellow:  #eda100;
+  --series-violet:  #4a3aa7;
+  --series-red:     #e34948;
+  --good:           #1baf7a;
+  --code-bg:        #f3f2ef;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .viz-root {
+    color-scheme: dark;
+    --surface-0:      #141413;
+    --surface-1:      #1a1a19;
+    --surface-2:      #222220;
+    --border:         #35342f;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #8f8d83;
+    --series-blue:    #3987e5;
+    --series-orange:  #d95926;
+    --series-aqua:    #199e70;
+    --series-yellow:  #c98500;
+    --series-violet:  #9085e9;
+    --series-red:     #e66767;
+    --good:           #199e70;
+    --code-bg:        #222220;
+  }
+}
+:root[data-theme="dark"] .viz-root {
+  color-scheme: dark;
+  --surface-0:      #141413;
+  --surface-1:      #1a1a19;
+  --surface-2:      #222220;
+  --border:         #35342f;
+  --text-primary:   #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted:     #8f8d83;
+  --series-blue:    #3987e5;
+  --series-orange:  #d95926;
+  --series-aqua:    #199e70;
+  --series-yellow:  #c98500;
+  --series-violet:  #9085e9;
+  --series-red:     #e66767;
+  --good:           #199e70;
+  --code-bg:        #222220;
+}
+
+.viz-root {
+  background: var(--surface-0);
+  color: var(--text-primary);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 32px 20px 80px;
+}
+.viz-root h1 { font-size: 26px; margin: 0 0 4px; }
+.viz-root h2 {
+  font-size: 18px; margin: 40px 0 12px; padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.viz-root h3 { font-size: 15px; margin: 20px 0 8px; }
+.viz-root p { color: var(--text-secondary); margin: 8px 0; }
+.viz-root code {
+  background: var(--code-bg); padding: 1px 5px; border-radius: 4px;
+  font-size: 13px; color: var(--text-primary);
+}
+.viz-root .meta { color: var(--text-muted); font-size: 13px; margin-bottom: 24px; }
+.viz-root .meta a { color: var(--series-blue); }
+.viz-root .badge {
+  display: inline-block; background: var(--good); color: #fff;
+  font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 999px;
+  margin-left: 8px; vertical-align: middle;
+}
+.viz-root .exec-summary {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 10px; padding: 18px 20px; margin: 16px 0;
+}
+.viz-root .exec-summary li { margin: 6px 0; color: var(--text-primary); }
+.viz-root table {
+  width: 100%; border-collapse: collapse; font-size: 14px; margin: 12px 0;
+}
+.viz-root th, .viz-root td {
+  text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border);
+}
+.viz-root th { color: var(--text-muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .02em; }
+.viz-root tr.hl { background: var(--surface-1); }
+.viz-root td.num, .viz-root th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.viz-root .ok { color: var(--good); font-weight: 600; }
+.viz-root .chart-wrap { overflow-x: auto; margin: 16px 0; }
+.viz-root .callout {
+  border-left: 3px solid var(--series-orange); background: var(--surface-1);
+  padding: 10px 14px; margin: 14px 0; font-size: 14px; color: var(--text-primary);
+  border-radius: 0 6px 6px 0;
+}
+.viz-root .callout.warn { border-left-color: var(--series-red); }
+.viz-root .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 640px) { .viz-root .grid2 { grid-template-columns: 1fr; } }
+.viz-root .param-bar-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; font-size: 13px; }
+.viz-root .param-bar-label { width: 130px; flex-shrink: 0; color: var(--text-secondary); }
+.viz-root .param-bar-track { flex: 1; background: var(--surface-2); border-radius: 4px; height: 18px; position: relative; }
+.viz-root .param-bar-fill { background: var(--series-blue); height: 100%; border-radius: 4px; }
+.viz-root .param-bar-val { width: 70px; text-align: right; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.viz-root footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 12px; }
+</style>
+
+<div class="viz-root">
+
+<h1>1-Goodput-Realistic-Load — Findings <span class="badge">SLA met</span></h1>
+<p class="meta">
+  Akamas study "Maximize LLM inference tokens/sec with TTFT constraint" ·
+  vLLM optimization pack 1.5.1 · Qwen2.5-7B-Instruct on 1x NVIDIA A10G ·
+  2026-07-20 → 2026-07-21 · 31 experiments (1 baseline + 30 optimize, stopped early by the user) ·
+  full record in <a href="../README.md">../README.md</a>
+</p>
+
+<div class="exec-summary">
+<strong>Executive summary</strong>
+<ul>
+  <li>The optimizer found a configuration <strong>+45.5% goodput over baseline</strong> (3131 vs. 2152 tokens/s) that still satisfies both the 1500ms TTFT P95 and 300ms ITL P95 SLA.</li>
+  <li>5 independent top trials all converge on <code>attention_backend=FLASHINFER</code> + <code>kv_cache_dtype=fp8</code> — reconfirming <code>0-explorative</code>'s own finding under a completely different (real ShareGPT / goodput-constrained) methodology.</li>
+  <li><code>max_num_seqs</code> is the strongest continuous driver of throughput found here (top trials average ~754 vs. ~336 for the worst); <code>gpu_memory_utilization</code> shows almost no effect within its tuned <code>[0.85,0.95]</code> range.</li>
+  <li><code>scheduling_policy</code> and <code>async_scheduling</code> show essentially no measurable effect on the goal metric in this data.</li>
+  <li>1 of 30 optimize experiments produced no usable score (not a workflow crash — <code>experimentsWithErrors: 0</code>); not investigated further.</li>
+</ul>
+</div>
+
+<h2>Results overview</h2>
+<p>Akamas' <code>stability</code> windowing searches each trial's full 150→1024 concurrency
+sweep for the best throughput sub-window where both SLA constraints hold, and scores
+<em>that</em> window — not a whole-trial average including the later, saturating portion.
+Every one of the 30 scored experiments (baseline included) found such a window.</p>
+
+<div class="chart-wrap">
+<table>
+<thead><tr><th>Rank</th><th>Experiment</th><th class="num">Goodput (tokens/s)</th><th class="num">vs. baseline</th><th>Key parameters</th></tr></thead>
+<tbody>
+<tr class="hl"><td>Baseline</td><td>1</td><td class="num">2152.0</td><td class="num">—</td><td>vLLM pack defaults, <code>gpu_memory_utilization=0.90</code></td></tr>
+<tr class="hl"><td>1 (best)</td><td>29</td><td class="num">3131.1</td><td class="num ok">+45.5%</td><td>FLASHINFER, fp8, gmu=0.92, max_num_seqs=772</td></tr>
+<tr><td>2</td><td>21</td><td class="num">3129.4</td><td class="num ok">+45.4%</td><td>FLASHINFER, fp8, gmu=0.92, max_num_seqs=783</td></tr>
+<tr><td>3</td><td>31</td><td class="num">3109.4</td><td class="num ok">+44.5%</td><td>FLASHINFER, fp8, gmu=0.86, max_num_seqs=761</td></tr>
+<tr><td>4</td><td>22</td><td class="num">3103.4</td><td class="num ok">+44.2%</td><td>FLASHINFER, fp8, gmu=0.91, max_num_seqs=840</td></tr>
+<tr><td>5</td><td>12</td><td class="num">2962.1</td><td class="num ok">+37.6%</td><td>FLASHINFER, fp8, gmu=0.93, max_num_seqs=615</td></tr>
+</tbody>
+</table>
+</div>
+
+
+<div id="chart-goodput"></div>
+<script>
+(function(){
+  var data = [
+    {label:'Baseline (1)', value:2152.0, kind:'base'},
+    {label:'Exp 29', value:3131.1, kind:'best'},
+    {label:'Exp 21', value:3129.4, kind:'top'},
+    {label:'Exp 31', value:3109.4, kind:'top'},
+    {label:'Exp 22', value:3103.4, kind:'top'},
+    {label:'Exp 12', value:2962.1, kind:'top'}
+  ];
+  var w = 820, barH = 26, gap = 12, left = 110, right = 70, top = 10;
+  var max = Math.max.apply(null, data.map(function(d){return d.value;}));
+  var h = data.length * (barH+gap) + top;
+  var svgNS = 'http://www.w3.org/2000/svg';
+  var svg = document.createElementNS(svgNS,'svg');
+  svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+  svg.setAttribute('width', '100%');
+  svg.setAttribute('style','max-width:820px');
+  svg.setAttribute('role','img');
+  svg.setAttribute('aria-label','Goodput tokens per second, baseline vs top five trials');
+  var css = getComputedStyle(document.querySelector('.viz-root'));
+  function colorFor(kind){
+    if(kind==='base') return css.getPropertyValue('--series-blue').trim() || '#2a78d6';
+    if(kind==='best') return css.getPropertyValue('--series-orange').trim() || '#eb6834';
+    return css.getPropertyValue('--text-muted').trim() || '#85837c';
+  }
+  var textColor = css.getPropertyValue('--text-primary').trim() || '#0b0b0b';
+  var secColor = css.getPropertyValue('--text-secondary').trim() || '#52514e';
+  data.forEach(function(d, i){
+    var y = top + i*(barH+gap);
+    var bw = (w-left-right) * (d.value/max);
+    var rect = document.createElementNS(svgNS,'rect');
+    rect.setAttribute('x', left); rect.setAttribute('y', y);
+    rect.setAttribute('width', bw); rect.setAttribute('height', barH);
+    rect.setAttribute('rx', 4);
+    rect.setAttribute('fill', colorFor(d.kind));
+    svg.appendChild(rect);
+    var label = document.createElementNS(svgNS,'text');
+    label.setAttribute('x', left-8); label.setAttribute('y', y+barH*0.65);
+    label.setAttribute('text-anchor','end'); label.setAttribute('font-size','12');
+    label.setAttribute('fill', secColor);
+    label.textContent = d.label;
+    svg.appendChild(label);
+    var val = document.createElementNS(svgNS,'text');
+    val.setAttribute('x', left+bw+8); val.setAttribute('y', y+barH*0.65);
+    val.setAttribute('font-size','12'); val.setAttribute('fill', textColor);
+    val.setAttribute('font-weight', d.kind==='base'?'400':'600');
+    val.textContent = d.value.toFixed(0);
+    svg.appendChild(val);
+  });
+  document.getElementById('chart-goodput').appendChild(svg);
+})();
+</script>
+
+<h2>Parameter effects</h2>
+
+<h3>Categorical parameters (mean goodput by value, 30 optimize trials)</h3>
+<div class="param-bar-row"><div class="param-bar-label">FLASHINFER</div><div class="param-bar-track"><div class="param-bar-fill" style="width:100%;background:var(--series-blue)"></div></div><div class="param-bar-val">2617 (n=23)</div></div>
+<div class="param-bar-row"><div class="param-bar-label">TRITON_ATTN</div><div class="param-bar-track"><div class="param-bar-fill" style="width:88%;background:var(--text-muted)"></div></div><div class="param-bar-val">2306 (n=3)</div></div>
+<div class="param-bar-row"><div class="param-bar-label">FLASH_ATTN</div><div class="param-bar-track"><div class="param-bar-fill" style="width:59%;background:var(--text-muted)"></div></div><div class="param-bar-val">1534 (n=3)</div></div>
+<p><code>attention_backend</code> is the strongest categorical driver found — FLASHINFER
+beats TRITON_ATTN by +13.5% and FLASH_ATTN by +70.6% on average, though the FLASH_ATTN/
+TRITON_ATTN samples are thin (n=3 each) — treat those two as suggestive, FLASHINFER's
+n=23 lead as solid.</p>
+
+<div class="param-bar-row"><div class="param-bar-label">fp8</div><div class="param-bar-track"><div class="param-bar-fill" style="width:100%;background:var(--series-blue)"></div></div><div class="param-bar-val">2867 (n=11)</div></div>
+<div class="param-bar-row"><div class="param-bar-label">fp8_e5m2</div><div class="param-bar-track"><div class="param-bar-fill" style="width:89%;background:var(--text-muted)"></div></div><div class="param-bar-val">2548 (n=5)</div></div>
+<div class="param-bar-row"><div class="param-bar-label">auto</div><div class="param-bar-track"><div class="param-bar-fill" style="width:75%;background:var(--text-muted)"></div></div><div class="param-bar-val">2143 (n=11)</div></div>
+<div class="param-bar-row"><div class="param-bar-label">fp8_e4m3</div><div class="param-bar-track"><div class="param-bar-fill" style="width:67%;background:var(--text-muted)"></div></div><div class="param-bar-val">1932 (n=2)</div></div>
+<p><code>kv_cache_dtype=fp8</code> leads (+33.8% vs. <code>auto</code>) — consistent with
+<code>0-explorative</code>'s own <code>fp8_e4m3</code> finding in direction, though here plain
+<code>fp8</code> edges out <code>fp8_e4m3</code> (small sample, n=2, for the latter).</p>
+
+<p><code>scheduling_policy</code> (priority 2474 vs. fcfs 2472, n=16/13) and
+<code>async_scheduling</code> (false 2495 vs. true 2452, n=14/15) show <strong>no
+meaningful effect</strong> in this data — near-identical means, well within noise for
+these sample sizes.</p>
+
+<h3>Continuous parameters</h3>
+<p><code>max_num_seqs</code> is the standout continuous driver: the top-5 trials
+average <strong>754</strong>, the bottom-5 average <strong>336</strong> — more than
+double. <code>gpu_memory_utilization</code> shows almost no separation (top-5 avg
+0.908 vs. bottom-5 avg 0.907, essentially identical) despite spanning the full tuned
+<code>[0.85, 0.95]</code> range — consistent with <code>ROADMAP.md</code> H2's own
+"weak correlation" finding on a different study, now echoed here.</p>
+
+<h2>Failures &amp; constraint behavior</h2>
+<p>1 of 30 optimize experiments (true experiment 5) produced no score. <code>study.json</code>
+reports <code>experimentsWithErrors: 0</code>, so this was not a workflow crash — most
+likely no window in that trial simultaneously satisfied the <code>stability</code>
+policy and both SLA constraints. Not investigated further (single occurrence).</p>
+<p>No <code>parameterConstraints</code> violations were found in any experiment's actual
+parameter assignment — the study's 6 carried-forward constraints
+(FLASH_ATTN/auto kv_cache_dtype, FlashInfer block_size, etc.) held throughout.</p>
+
+<h2>Caveats &amp; data-quality notes</h2>
+<div class="callout warn">
+<strong>Export-bundle analysis pitfall (found producing this report):</strong> the
+<code>akamas-study-analyzer</code> plugin's bundled script assumes
+<code>last-optimization.json</code> array index <code>i</code> = experiment
+<code>i+1</code>. For this bundle that mapping is wrong — the true mapping is
+<code>i+2</code> (the baseline experiment is excluded from the arrays entirely).
+Using the script's assumption produced a completely fabricated first draft of this
+report (every trial appearing to violate the SLA). Caught by cross-checking every
+score against <code>logs.json</code>'s own <code>"Computed score for trial N.1 is
+VALID/INVALID: &lt;value&gt;"</code> messages — all 29 scored optimize trials matched
+exactly at <code>+2</code>, zero matched at <code>+1</code>. Flagged in the plugin's
+own <code>reference/export-schema.md</code>.
+</div>
+<div class="callout">
+<code>metricConstraintsViolations[i]</code> in the same file does <strong>not</strong>
+describe whether experiment <code>i</code>'s scored value violates the goal's
+constraints — with <code>stability</code> windowing active, the scored window is
+specifically selected from the constraint-satisfying windows within the trial;
+the violations array reflects a different, worse window in the same trial. Every
+one of the 30 scored experiments in this bundle shows <code>VALID</code> in
+<code>logs.json</code> despite most showing nonzero entries in that array.
+</div>
+<p>Exact TTFT/ITL P95 values for the winning window aren't restated numerically here —
+<code>logs.json</code> confirms compliance qualitatively; the precise per-trial figures
+would require correlating the selected window's timestamps against the raw
+<code>metrics-vLLM-time_to_first_token_p95.json</code>/
+<code>metrics-vLLM-inter_token_latency_p95.json</code> timeseries in <code>export.gz</code>
+(not done here).</p>
+
+<h2>Recommendations</h2>
+<ol>
+<li>Carry <code>attention_backend=FLASHINFER</code> + <code>kv_cache_dtype=fp8</code> +
+<code>max_num_seqs≈750-800</code> forward as a strong starting point for future studies
+on similar hardware/model size — confirmed by 5 independent trials here, and it
+reconfirms <code>0-explorative</code>'s own finding under a different methodology.</li>
+<li>Consider dropping or narrowing <code>gpu_memory_utilization</code>'s tuned range in
+a future study of this shape — it showed almost no effect within <code>[0.85,0.95]</code>,
+so search budget spent there could go to a parameter that actually moves the goal.</li>
+<li><code>scheduling_policy</code> and <code>async_scheduling</code> likewise showed no
+measurable effect here — worth re-checking with a larger sample before continuing to
+tune them by default in similar future studies.</li>
+<li>For any future analysis of an Akamas export bundle: verify the array-to-experiment
+offset against <code>logs.json</code> before trusting <code>last-optimization.json</code>
+array positions, and treat <code>metricConstraintsViolations[i]</code> as informational
+only, never as a pass/fail signal for the scored value — see "Caveats" above.</li>
+</ol>
+
+<footer>Generated 2026-08-25 from <code>results/export.gz</code> (Akamas export, study state <code>FINISHED</code>). Raw per-trial data: <code>results/trials.csv</code>.</footer>
+
+</div>
