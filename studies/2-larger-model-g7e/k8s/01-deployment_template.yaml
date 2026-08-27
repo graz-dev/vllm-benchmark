@@ -55,20 +55,21 @@ spec:
 
       containers:
         - name: vllm
-          # RESOLVED 2026-08-21 (see README "Prerequisites still open" #2): v0.22.0
-          # (pinned in 0-explorative/1-goodput-realistic-load) predates Qwen3.8-27B's
-          # 2026-08-14 release and does not support it. Verified empirically via a
-          # real manual deploy against `:latest` on this study's own g7e.4xlarge node:
-          # resolved to vLLM 0.27.1 (`pip show vllm` inside the running container),
-          # image digest sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967
-          # — confirmed identical to the `vllm/vllm-openai:v0.27.1` tag's own digest on
-          # Docker Hub (same manifest list), so pinning to that tag changes nothing
-          # about what actually ran, it just stops floating on `latest`.
-          image: vllm/vllm-openai:v0.27.1
+          # CHANGED 2026-08-27: model swapped back from Qwen/Qwen3.8-27B to the exact
+          # model 1-goodput-realistic-load used (Qwen2.5-7B-Instruct), together with
+          # reverting the image tag to that study's own v0.22.0 — see README "Model
+          # swap" for the full rationale. This makes hardware (g7e.4xlarge/Blackwell
+          # SM120 vs. 1-goodput-realistic-load's A10G/Ampere) the only variable left
+          # between the two studies, isolating it from the two confounds the 27B
+          # attempt introduced (a much bigger model, and a hybrid Mamba/attention
+          # architecture with its own vLLM support gaps). v0.22.0 has NOT yet been
+          # smoke-tested on this GPU's SM120 compute capability — do this before
+          # trusting an Akamas run (see README "Prerequisites still open").
+          image: vllm/vllm-openai:v0.22.0
           command: ["vllm", "serve"]
           args:
-            - "Qwen/Qwen3.8-27B"
-            - "--served-model-name=qwen3-8-27b"
+            - "Qwen/Qwen2.5-7B-Instruct"
+            - "--served-model-name=qwen2.5-7b"
             - "--port=8000"
             - "--host=0.0.0.0"
             - "--enable-mfu-metrics"
@@ -112,11 +113,10 @@ spec:
             - "--max-model-len=${vLLM.max_model_len}"
 
             # No --spec-method/--spec-tokens flags here at all — same approach
-            # 1-goodput-realistic-load settled on after its 5 spec-decoding crashes:
-            # the flags are simply omitted, so vLLM runs with speculative decoding off
-            # by construction. Qwen3.8-27B ships an MTP draft head, but that's
-            # deliberately not attempted until this study's own baseline is proven
-            # stable — see README "Parameters tuned".
+            # 1-goodput-realistic-load settled on after its 5 spec-decoding crashes
+            # trying this on this exact model: the flags are simply omitted, so vLLM
+            # runs with speculative decoding off by construction — see README
+            # "Parameters tuned".
           ports:
             - name: http
               containerPort: 8000
@@ -124,7 +124,9 @@ spec:
           # NOTE: memory request/limit sized for g7e.4xlarge's 128GiB total RAM (was
           # 256GiB on p5.4xlarge before the 2026-08-21 hardware swap) — limit lowered
           # from 200Gi accordingly, leaving headroom for the DCGM exporter/node-exporter
-          # DaemonSets and kubelet overhead on this node.
+          # DaemonSets and kubelet overhead on this node. Generous relative to
+          # Qwen2.5-7B-Instruct's ~15GB of weights (reverted 2026-08-27) — left as-is,
+          # sized for the node rather than the model, no downside to the extra headroom.
           resources:
             requests:
               nvidia.com/gpu: "1"
@@ -135,9 +137,9 @@ spec:
               cpu: "14"
               memory: "100Gi"
 
-          # Model loading: ~56GB of bf16 weights (27.8B params) vs. 1-goodput-
-          # realistic-load's ~15GB (7B) — budget more time before failing.
-          # startupProbe allows up to 20 minutes (120 x 10s).
+          # startupProbe allows up to 20 minutes (120 x 10s) — generous relative to
+          # 1-goodput-realistic-load's 10-minute budget for the same model, left as-is
+          # (no downside to the longer ceiling now that the model is smaller again).
           startupProbe:
             httpGet:
               path: /health

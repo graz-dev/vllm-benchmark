@@ -7,13 +7,36 @@
 
 Same goodput question as `1-goodput-realistic-load` — maximize
 `vLLM.prefill_token_throughput + vLLM.decode_token_throughput` subject to a P95 TTFT
-and P95 ITL latency SLA (`goal.constraints`) — but scaled to a **~4x larger model on a
-single, higher-VRAM GPU**: does goodput scale favorably when the model gets bigger and
-the GPU has much more memory to work with, or does the larger model's own latency cost
-(and, on this study's actual hardware, a materially lower memory bandwidth than H100 —
-see "Hardware swap" below) eat into whatever headroom the extra VRAM provides? Not
-derivable from `0-explorative` or `1-goodput-realistic-load` alone, both of which are
-Qwen2.5-7B-Instruct on a single A10G.
+and P95 ITL latency SLA (`goal.constraints`) — now asking a **hardware-only** question:
+does the exact same model/config that `1-goodput-realistic-load` already tuned on an
+A10G behave differently — better, worse, or find a different optimal region — on this
+study's GPU (`g7e.4xlarge`, NVIDIA RTX PRO 6000 Blackwell, SM120)? See "Model swap"
+below for why this study no longer tests a bigger model, only different hardware for
+the same one.
+
+**Model swap (2026-08-27)**: this study originally targeted `Qwen/Qwen3.8-27B` (a ~4x
+larger model, see "Hardware swap" below for the hardware side of that original framing)
+— **reverted to `Qwen/Qwen2.5-7B-Instruct`**, the exact model `0-explorative`/
+`1-goodput-realistic-load` use, following a real run and a joint discussion of why its
+result was disappointing. That run (`akamas/2-Larger-Model-G7e.yaml`, 2026-08-24 to
+2026-08-25, 22 experiments attempted before being stopped) found only a small
+improvement over its own baseline, and two credible, competing explanations for why
+surfaced during discussion: (1) `Qwen/Qwen3.8-27B`'s hybrid Mamba/attention (GDN)
+architecture stresses vLLM code paths this repo had never exercised before — it caused
+two real pre-flight crashes (see "Incidents," kept below for the historical record) and
+all 3 in-study experiment errors matched the same known Mamba cache-block ceiling; (2)
+this GPU's SM120 kernel maturity is itself an open question this repo had already
+flagged (`FLASHINFER`+fp8 kernel-selection rough edges, never actually smoke-tested — see
+"Prerequisites still open" #6) and never resolved before the run. Both are plausible
+and the run alone couldn't separate them — a bigger, architecturally different model
+AND newer hardware changed at the same time. **Reverting the model removes the first
+confound entirely**: with the exact model `1-goodput-realistic-load` already has a
+clean, SLA-compliant, well-understood baseline and optimum for, any difference this
+study now finds is attributable to hardware (g7e.4xlarge/Blackwell SM120 vs.
+A10G/Ampere), not to model architecture. A manual `TRITON_ATTN`+fp8 smoke test aimed at
+resolving the SM120 kernel-maturity question directly was started but abandoned
+mid-flight in favor of this broader reset — worth resuming once this study's own
+baseline is reverified on the swapped-back model (see "Prerequisites still open").
 
 **Hardware swap (2026-08-21)**: originally planned on `p5.4xlarge` (1x H100 80GB) — no
 capacity available in `us-east-2` at provisioning time. Switched to `g7e.4xlarge` (1x
@@ -43,15 +66,16 @@ like-for-like substitution — it changes what this study can actually conclude:
 **Redirects `ROADMAP.md` Section B's original Study #2 slot** (2026-08-20, explicit
 user decision) — that slot originally planned a `p5.48xlarge` (8x H100) re-baseline of
 the *same* Qwen2.5-7B-Instruct model used everywhere else in this repo (Goal A: more
-throughput at parity of hardware). This study asks a different question instead (a
-bigger model, not more GPUs), so it doesn't fit Goal A/B's original framing cleanly.
-**The original Study #2 plan is kept as a superseded historical record in
-`ROADMAP.md` Section D** — not deleted — because Section D's Study #3/#4 both build on
-its `p5.48xlarge`/Qwen2.5-7B baseline for their own tensor-parallelism scaling
-questions; see `ROADMAP.md`'s explicit flag on those two sections for the
-reconciliation this redirect now leaves open. This study's own scope stops at "does a
-bigger model on a single, more powerful GPU improve goodput" — it does not attempt to
-answer Goal A/B's multi-GPU right-sizing questions.
+throughput at parity of hardware). This study originally asked a different question
+instead (a bigger model, not more GPUs); after the 2026-08-27 model swap above it's
+closer to Goal A/B's original framing again (same model, different single-GPU
+hardware), but still doesn't test multiple GPUs. **The original Study #2 plan is kept
+as a superseded historical record in `ROADMAP.md` Section D** — not deleted — because
+Section D's Study #3/#4 both build on its `p5.48xlarge`/Qwen2.5-7B baseline for their
+own tensor-parallelism scaling questions; see `ROADMAP.md`'s explicit flag on those two
+sections for the reconciliation this redirect leaves open. This study's own scope stops
+at "does the same model on different single-GPU hardware improve goodput" — it does not
+attempt to answer Goal A/B's multi-GPU right-sizing questions.
 
 ## Stack & versions
 
@@ -66,28 +90,23 @@ answer Goal A/B's multi-GPU right-sizing questions.
   still this build. GPU pack: metrics-only, same as prior studies — not independently
   re-verified here either. Kubernetes pack: stock `Kubernetes Container` component
   type, no properties needed.
-- **Workload under test:** `Qwen/Qwen3.8-27B` (dense, 27.8B parameters — **not** MoE
-  despite the "3.8" name, which is a version number, not an active-parameter count;
-  released 2026-08-14, day-0 vLLM support announced by the vLLM project itself).
-  Multimodal checkpoint (native vision + text) but served **text-only** for this
-  benchmark — no image/video inputs are sent, so the vision encoder should sit idle;
-  flagged here in case it turns out to add measurable startup/memory overhead even
-  unused. Served as `qwen3-8-27b`, namespace `llm-serving`.
-  - **RESOLVED 2026-08-21 (image tag)**: needs a vLLM build newer than the `v0.22.0`
-    image pinned in `0-explorative`/`1-goodput-realistic-load` — confirmed by a real
-    manual deploy, resolved to **`vllm/vllm-openai:v0.27.1`**, now pinned in
-    `k8s/01-deployment_template.yaml` (see "Prerequisites still open" #2). **Still
-    open**: whether the installed vLLM optimization pack's parameter set (built
-    against `0.22.0`) still applies cleanly to `0.27.1` has not been verified against
-    a live Akamas instance yet — same open question as `1-goodput-realistic-load`'s
-    own pack-version prerequisite, now sharpened to a concrete version jump
-    (`0.22.0` → `0.27.1`, 5 minor versions) rather than an unknown target.
-  - Ships an MTP (multi-token prediction) draft head **built into the checkpoint**
-    (speculative decoding needs no separate draft model) — **deliberately pinned off**
-    for this study (see "Parameters tuned" below), not tuned. `1-goodput-realistic-load`
-    hit 5 distinct crashes across its `optimize` step trying `spec_method`/`spec_tokens`
-    on Qwen2.5-7B; revisit speculative decoding for this model only after this study's
-    baseline is proven stable, not from the start.
+- **Workload under test:** `Qwen/Qwen2.5-7B-Instruct` (dense, non-MoE — **reverted
+  2026-08-27** from `Qwen/Qwen3.8-27B`, see "Model swap" above). The exact same model
+  `0-explorative`/`1-goodput-realistic-load` use, on this study's own hardware. Served
+  as `qwen2.5-7b`, namespace `llm-serving`.
+  - **Image tag reverted to `vllm/vllm-openai:v0.22.0`** (2026-08-27, matching
+    `0-explorative`/`1-goodput-realistic-load`'s own pin exactly) — the `v0.27.1` pin
+    used for the abandoned `Qwen/Qwen3.8-27B` attempt is no longer needed, that model
+    is what required the newer build. **Not yet verified**: `v0.22.0` has never been
+    smoke-tested on this GPU's SM120 compute capability — only ever run on A10G/Ampere
+    (prior studies) or, briefly, `v0.27.1` on this g7e node (abandoned 27B attempt) —
+    do this before trusting an Akamas run (see "Prerequisites still open").
+  - No MTP (multi-token prediction) draft head on this model (unlike the abandoned
+    `Qwen/Qwen3.8-27B` attempt) — `spec_method`/`spec_tokens` stay excluded regardless
+    (see "Parameters tuned" below): `1-goodput-realistic-load` hit 5 distinct crashes
+    across its own `optimize` step trying speculative decoding on this exact model, so
+    it's deliberately not attempted here either, for the same directly-applicable
+    reason (not a different-model analogy anymore).
 - **Cluster / hardware:** single NVIDIA RTX PRO 6000 Blackwell Server Edition 96GB GPU
   via AWS **`g7e.4xlarge`** (16 vCPU, 128GiB RAM) — **swapped 2026-08-21** from the
   originally planned single H100 80GB via `p5.4xlarge` (16 vCPU, 256GiB RAM; confirmed
@@ -107,23 +126,22 @@ answer Goal A/B's multi-GPU right-sizing questions.
   explicitly target `llm-serving-g7e` regardless; placement doesn't rely on the other
   node group staying off. Same `llm-serving`/`llm-benchmark` namespaces as
   `1-goodput-realistic-load`, reused as-is — only the node group differs.
-- **Load generator:** **TODO, carried forward as an explicit starting point, not yet
-  recalibrated** — same tool and methodology as `1-goodput-realistic-load`: NVIDIA
+- **Load generator:** same tool and methodology as `1-goodput-realistic-load`: NVIDIA
   AIPerf, `--public-dataset sharegpt` (real ShareGPT replay), closed-loop concurrency
   sweep, `windowing.stability`. That study's *current* concurrency list
   (`150,179,213,253,302,359,428,509,606,722,860,1024`, 12 levels, 300s each) and SLA
   thresholds (TTFT P95 ≤ 1500ms, ITL P95 ≤ 300ms) were calibrated specifically for
   Qwen2.5-7B-Instruct on an A10G — see that study's own README, "Sizing the
   concurrency sweep," for the full multi-week calibration process this had to go
-  through. **Those exact numbers almost certainly don't transfer** to a ~4x larger
-  model on different single-GPU hardware (the true saturation point could land lower —
-  a bigger model's per-token cost is higher, and this study's actual GPU, RTX PRO 6000
-  Blackwell, has roughly half H100's memory bandwidth — or higher — 96GB vs 80GB VRAM
-  gives more KV-cache headroom — no prior data points either way for this specific
-  pairing). Before
-  this study's real `optimize` step runs, repeat that study's own manual-sweep
-  calibration process against this model/hardware directly rather than trusting the
-  carried-forward numbers.
+  through. **Model is no longer a confound** (2026-08-27 model swap, see "Model swap"
+  above) — this study now uses that exact same model, so the carried-forward numbers
+  are a much more reasonable starting point than before. Only the GPU differs (RTX PRO
+  6000 Blackwell vs. A10G — roughly half H100's memory bandwidth, but 96GB vs 80GB VRAM
+  gives more KV-cache headroom, and this is a different, more capable GPU than the
+  A10G those numbers were actually calibrated on either way), so the true saturation
+  point could still land at a different concurrency — a real manual exploratory check
+  before trusting this list for an `optimize` step is still worthwhile, just a smaller
+  risk than when the model also differed.
 - **Telemetry:** Prometheus, same instance/metric catalog as prior studies
   (`kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090`,
   `duration: 30`, `logLevel: DETAILED`) — reused as-is since telemetry reads vLLM's own
@@ -135,25 +153,25 @@ answer Goal A/B's multi-GPU right-sizing questions.
 
 The same 14 tunable parameters as `1-goodput-realistic-load` (see that study's README
 for the full per-parameter rationale, largely hardware-independent), now built into
-`akamas/2-Larger-Model-G7e.yaml`. **Baseline design (corrected 2026-08-21, see
-"Incidents" below) matches `1-goodput-realistic-load`'s `doNotRenderParameters`
-pattern, with one model-specific addition**: every tuned/pinned parameter referenced
-by the deployment template is excluded from baseline rendering (so vLLM applies its
-own real default) *except* two — `gpu_memory_utilization` (pinned to 0.90, since the
-pack's own `defaultValue` of 0.92 doesn't match what this baseline wants) and
-`max_num_seqs` (pinned to 256, needed *only* for this model — `Qwen/Qwen3.8-27B`'s
-hybrid Mamba/attention architecture makes vLLM's own auto-selected default for it
-unsafe here, see incident #2 below; `1-goodput-realistic-load` itself doesn't need
-this exception for Qwen2.5-7B's pure-transformer shape). The "Baseline" column below
-shows the pack's own `defaultValue` for reference, not what actually renders — every
-row except the two just named is left unrendered at baseline (`doNotRenderParameters`)
-and only takes its shown value during `optimize`, when Akamas' `parametersSelection`
-search picks a real value for it.
+`akamas/2-Larger-Model-G7e.yaml`. **Baseline design now matches
+`1-goodput-realistic-load`'s `doNotRenderParameters` pattern exactly**: every
+tuned/pinned parameter referenced by the deployment template is excluded from baseline
+rendering (so vLLM applies its own real default) *except* `gpu_memory_utilization`
+(pinned to 0.90, since the pack's own `defaultValue` of 0.92 doesn't match what this
+baseline wants). A `max_num_seqs: 256` pin was needed for a time (see "Incidents"
+below) while this study targeted `Qwen/Qwen3.8-27B` — its hybrid Mamba/attention
+architecture made vLLM's own auto-selected default for it unsafe. **Removed 2026-08-27**
+along with the model swap back to `Qwen2.5-7B-Instruct`, which doesn't need it (same as
+`1-goodput-realistic-load`). The "Baseline" column below shows the pack's own
+`defaultValue` for reference, not what actually renders — every row except
+`gpu_memory_utilization` is left unrendered at baseline (`doNotRenderParameters`) and
+only takes its shown value during `optimize`, when Akamas' `parametersSelection` search
+picks a real value for it.
 
 | Parameter | Domain / categories | Baseline (rendered) |
 |---|---|---|
 | `vLLM.gpu_memory_utilization` | [0.85, 0.95] | **0.90** (pinned) |
-| `vLLM.max_num_seqs` | [16, 1024] | **256** (pinned, see incident #2) |
+| `vLLM.max_num_seqs` | [16, 1024] | not rendered (vLLM default) |
 | `vLLM.max_num_batched_tokens` | [256, 8192] | not rendered (vLLM default) |
 | `vLLM.kv_cache_dtype` | auto, fp8, fp8_e4m3, fp8_e5m2 | not rendered (vLLM default) |
 | `vLLM.performance_mode` | balanced, interactivity, throughput | not rendered (vLLM default) |
@@ -189,7 +207,7 @@ any `optimize`-step KV-cache-budget-related result.
 | `vLLM.tensor_parallel_size` | 1 | Single GPU (`g7e.4xlarge` has exactly one RTX PRO 6000 Blackwell). |
 | `vLLM.pipeline_parallel_size` | 1 | Same. |
 | `vLLM.data_parallel_size` | 1 | Same. |
-| `vLLM.enable_expert_parallel` | false | Qwen3.8-27B is dense, not MoE. |
+| `vLLM.enable_expert_parallel` | false | Qwen2.5-7B-Instruct is dense, not MoE. |
 | `vLLM.disable_custom_all_reduce` | false | Only relevant at `tensor_parallel_size > 1`. |
 | `vLLM.decode_context_parallel_size` | 1 | Context parallelism needs multiple GPUs. |
 | `vLLM.prefill_context_parallel_size` | 1 | Same. |
@@ -204,19 +222,24 @@ never rendered at all, since the deployment template never references their toke
 
 | Parameter | Why |
 |---|---|
-| `vLLM.spec_method` / `vLLM.spec_tokens` | Qwen3.8-27B ships an MTP draft head, but `1-goodput-realistic-load` hit 5 distinct spec-decoding crashes on a different model — deliberately not attempted until this study's own baseline is proven stable. No `--spec-method`/`--spec-tokens` flags in the deployment template at all (not even pinned to a sentinel), same treatment `1-goodput-realistic-load` settled on. |
+| `vLLM.spec_method` / `vLLM.spec_tokens` | `1-goodput-realistic-load` hit 5 distinct spec-decoding crashes trying this on the exact same model (Qwen2.5-7B-Instruct) — deliberately not attempted here either. No `--spec-method`/`--spec-tokens` flags in the deployment template at all (not even pinned to a sentinel), same treatment `1-goodput-realistic-load` settled on. |
 | `vLLM.prefix_caching_hash_algo` | Prefix caching disabled entirely via a hardcoded `--no-enable-prefix-caching` flag — carried forward from `1-goodput-realistic-load`. |
 | `vLLM.compilation_mode` | No direct top-level CLI flag exists for it — same reasoning as prior studies. |
 
-**TODO**: re-verify the `TRITON_ATTN`+fp8 `parameterConstraints` inherited from
-`1-goodput-realistic-load` — those were root-caused as Ampere-specific (see that
-study's README). This study's actual GPU (RTX PRO 6000 Blackwell, SM120) is neither
-Ampere nor Hopper — don't assume H100's "native FP8, exclusion unneeded" reasoning
-transfers here either; SM120 has its own documented FP8/FP4 kernel-selection rough
-edges upstream. Confirm empirically whether those exclusions are still needed here
-rather than assuming they transfer, or assuming they're safe to drop. Flagged
-explicitly (as a YAML comment) in `akamas/2-Larger-Model-G7e.yaml` itself, not just
-here.
+**REMOVED 2026-08-27 (explicit user decision)**: all `parameterConstraints` inherited
+from `1-goodput-realistic-load` — `FLASH_ATTN`+`kv_cache_dtype`,
+`FlashInfer`+`block_size`, `max_num_batched_tokens`≥`max_num_seqs`, and the 3
+`TRITON_ATTN`+fp8 exclusions root-caused as Ampere-specific (see that study's README)
+— are all gone from `akamas/2-Larger-Model-G7e.yaml`. The optimizer now explores the
+full `parametersSelection` space unconstrained on this hardware (RTX PRO 6000
+Blackwell, SM120), including combinations previously excluded either as
+Ampere-specific known-bad or as vLLM's own CLI validation rules. Expect more failed
+`optimize`-step experiments as a result — invalid combinations now surface as real
+vLLM startup errors instead of being pre-excluded; `maxFailedExperiments: 200` has
+ample headroom for this. A manual `TRITON_ATTN`+fp8 smoke test that would have answered
+the Ampere-vs-SM120 question directly was started 2026-08-27 but abandoned mid-flight
+(the pod came up and stayed `Running` before being reverted, an unconfirmed but
+promising data point) in favor of this broader unconstrained-search approach instead.
 
 ## Prerequisites still open before this study can be started
 
@@ -227,40 +250,54 @@ full resource summary and its own "Placeholders left" section. What's still open
    are still valid for whatever vLLM build this model actually requires (see "Stack &
    versions" above) — these resources were built against a scratch clone of pack
    `1.5.1`, not a live `akamas describe optimization-pack vLLM` check.
-2. ~~Confirm the exact `vllm/vllm-openai` image tag~~ **RESOLVED 2026-08-21**: `v0.22.0`
-   (pinned in prior studies) does not support `Qwen/Qwen3.8-27B`, confirmed by
-   deploying `:latest` for real against this study's own `g7e.4xlarge` node —
-   resolved to **vLLM 0.27.1**, image digest verified identical to the
-   `vllm/vllm-openai:v0.27.1` tag on Docker Hub. `k8s/01-deployment_template.yaml`
-   now pins that exact tag instead of floating on `:latest`.
-3. Recalibrate the AIPerf concurrency sweep and SLA thresholds against this
-   model/hardware directly (manual exploration, same process as
-   `1-goodput-realistic-load`'s own "Sizing the concurrency sweep" section) before
-   trusting the carried-forward numbers in `k8s/05-job.yaml`/`akamas/2-Larger-Model-G7e.yaml`'s
-   `windowing`.
+2. **CHANGED 2026-08-27**: image tag reverted to **`v0.22.0`** (matching
+   `0-explorative`/`1-goodput-realistic-load` exactly) along with the model swap back
+   to `Qwen2.5-7B-Instruct` — the `v0.27.1` pin was only needed for the abandoned
+   `Qwen/Qwen3.8-27B` attempt. **Not yet verified**: `v0.22.0` has never been
+   smoke-tested on this GPU's SM120 compute capability — do this before trusting an
+   Akamas run, same convention as the two incidents below.
+3. Recalibrate the AIPerf concurrency sweep and SLA thresholds against this hardware
+   directly (manual exploration, same process as `1-goodput-realistic-load`'s own
+   "Sizing the concurrency sweep" section) before trusting the carried-forward numbers
+   in `k8s/05-job.yaml`/`akamas/2-Larger-Model-G7e.yaml`'s `windowing` — lower-risk now
+   than before the model swap (see "Load generator" above), since the model is no
+   longer also different, but still not yet verified on this specific GPU.
 4. Supply `akamas/id_rsa` (the `toolbox` host SSH key) — not generated by this scaffold,
    same convention as prior studies' committed keys, see `akamas/README.md`.
 5. Validate every `akamas/*.yaml` file against a live Akamas instance (`akamas describe
    optimization-pack vLLM`, then `akamas create -f ...` for real) — only structurally
    validated against a scratch clone of the pack's source so far, not a live CLI (see
    `akamas/README.md` "Validation performed").
-6. **New, 2026-08-21**: sanity-check `attention_backend=FLASHINFER` and each
-   `kv_cache_dtype` fp8-family value (`fp8`/`fp8_e4m3`/`fp8_e5m2`) with a manual `vllm
-   serve` smoke test on the actual `g7e.4xlarge` node before trusting any
-   `optimize`-step experiment that lands on one of them — vLLM's SM120 (RTX PRO 6000
-   Blackwell) kernel support has documented gaps in exactly this area (FP8/FP4
-   kernel-selection code that sometimes silently falls back instead of erroring,
-   FlashInfer JIT breakage on some CUDA builds) that don't affect Hopper/H100. Confirm
-   the installed vLLM build's CUDA/driver version actually supports this GPU's compute
-   capability (12.0) at all before anything else in this list.
+6. Sanity-check `attention_backend=FLASHINFER`/`TRITON_ATTN` and each `kv_cache_dtype`
+   fp8-family value (`fp8`/`fp8_e4m3`/`fp8_e5m2`) with a manual `vllm serve` smoke test
+   on the actual `g7e.4xlarge` node before trusting any `optimize`-step experiment that
+   lands on one of them — vLLM's SM120 (RTX PRO 6000 Blackwell) kernel support has
+   documented gaps in exactly this area (FP8/FP4 kernel-selection code that sometimes
+   silently falls back instead of erroring, FlashInfer JIT breakage on some CUDA
+   builds) that don't affect Hopper/H100. Confirm the installed vLLM build's
+   CUDA/driver version actually supports this GPU's compute capability (12.0) at all
+   before anything else in this list. **Started 2026-08-27** (`TRITON_ATTN`+`fp8`,
+   after re-provisioning `vllm-model-cache` into the node's actual AZ, us-east-2b) but
+   abandoned mid-flight in favor of the model-swap reset above — resume this test once
+   the swapped-back baseline is reverified.
+7. ~~Clear the shared AIPerf dataset cache~~ **RESOLVED 2026-08-27**: deleted
+   `/benchmarks/sharegpt-cache/inputs.json` from the `aiperf-results` PVC — it had
+   `"model": "qwen3-8-27b"` baked in from this study's own 2026-08-25 run, which would
+   have 404'd every request against the now-reverted `qwen2.5-7b` the same way the
+   reverse mismatch did before (see `k8s/05-job.yaml`'s `CONCURRENCY_LIST` comment).
+   The next run's own "if not exists, regenerate" logic will rebuild it correctly.
+   Also cleaned up the stale `Qwen/Qwen3.8-27B` weights (~52GB) from
+   `vllm-model-cache` — only the current `Qwen2.5-7B-Instruct` (~15GB) remains.
 
 ## Incidents found during manual smoke-testing (2026-08-21)
 
-Before creating this study in Akamas, `vLLM` was deployed by hand against the real
-`g7e.4xlarge` node (per "How to run" below's own recommended pre-check) to validate the
-baseline design — same convention `0-explorative`/`1-goodput-realistic-load` use for
-documenting real, root-caused failures rather than leaving them as mysterious history.
-Both incidents below are now fixed in `akamas/2-Larger-Model-G7e.yaml`'s baseline step.
+**Historical — pertain to the abandoned `Qwen/Qwen3.8-27B` attempt** (see "Model swap"
+above). Kept for the record per this repo's convention of documenting real,
+root-caused failures rather than leaving them as mysterious history; incident #2's
+`max_num_seqs` pin it required has since been removed from the baseline (the swapped-
+back `Qwen2.5-7B-Instruct` doesn't need it). Before creating this study in Akamas,
+`vLLM` was deployed by hand against the real `g7e.4xlarge` node (per "How to run"
+below's own recommended pre-check) to validate the baseline design.
 
 1. **`--max-num-partial-prefills`/`--max-long-partial-prefills` don't exist on this
    vLLM version** — first manual deploy (image `vllm/vllm-openai:latest`, the

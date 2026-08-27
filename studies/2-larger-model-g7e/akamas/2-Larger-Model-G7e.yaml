@@ -75,30 +75,18 @@ parametersSelection:
 # prefix_caching_hash_algo and vLLM.compilation_mode. None of the four is referenced by
 # k8s/01-deployment_template.yaml, so none of them ever renders for this study at all.
 
-parameterConstraints:
-  # Carried forward unchanged from 1-goodput-realistic-load.
-  - name: FLASH_ATTN only supports auto kv_cache_dtype
-    formula: vLLM.attention_backend != "FLASH_ATTN" || vLLM.kv_cache_dtype == "auto"
-  - name: FlashInfer only supports block_size 16, 32, or 64
-    formula: vLLM.attention_backend != "FLASHINFER" || vLLM.block_size == "16" || vLLM.block_size == "32" || vLLM.block_size == "64"
-  - name: max_num_batched_tokens must be at least max_num_seqs
-    formula: vLLM.max_num_batched_tokens >= vLLM.max_num_seqs
-  # TODO — NOT YET RE-VERIFIED FOR THIS STUDY'S HARDWARE: these 3 TRITON_ATTN+fp8
-  # exclusions were root-caused on 0-explorative's Ampere (A10G) hardware. This study
-  # runs on g7e.4xlarge (RTX PRO 6000 Blackwell, SM120 — swapped 2026-08-21 from
-  # p5.4xlarge/H100/Hopper/SM90, no regional capacity), a third, distinct architecture
-  # from both. vLLM's kernel support for SM120 has known rough edges specifically
-  # around FP8/FP4 kernel selection (code paths that assume "Blackwell == SM100"
-  # sometimes silently fall back to slower kernels instead of erroring) — do not
-  # assume H100's "native FP8, exclusion no longer needed" reasoning transfers to this
-  # GPU either. Kept here as a safe carried-forward default, NOT because it's been
-  # confirmed still necessary — re-test empirically on this hardware before removing.
-  - name: TRITON_ATTN does not support fp8 kv_cache_dtype on Ampere
-    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8"
-  - name: TRITON_ATTN does not support fp8_e4m3 kv_cache_dtype on Ampere
-    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e4m3"
-  - name: TRITON_ATTN does not support fp8_e5m2 kv_cache_dtype (query-quant bug)
-    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e5m2"
+# REMOVED 2026-08-27 (explicit user decision): this study previously carried forward
+# all 6 of 1-goodput-realistic-load's parameterConstraints (FLASH_ATTN+kv_cache_dtype,
+# FlashInfer+block_size, max_num_batched_tokens>=max_num_seqs, and 3 TRITON_ATTN+fp8
+# exclusions root-caused on Ampere/A10G — see git history for the exact formulas). All
+# removed so the optimizer explores the full, unconstrained parametersSelection space
+# on this hardware (RTX PRO 6000 Blackwell, SM120) — including combinations previously
+# excluded as known-invalid on Ampere or by vLLM's own CLI validation. Expect more
+# failed experiments as a result (invalid combos now surface as real vLLM startup
+# errors instead of being pre-excluded) — `maxFailedExperiments: 200` below has ample
+# headroom. Re-add specific constraints here if a failure pattern turns out to be
+# common enough to be worth excluding again, informed by what this study's own
+# experiments actually hit rather than carried-forward assumptions from other hardware.
 
 steps:
   - name: baseline
@@ -126,31 +114,19 @@ steps:
     # it un-excluded and let it render at its pack default") because the pack's own
     # defaultValue for it is 0.92, not the 0.90 this study's baseline wants.
     #
-    # SECOND INCIDENT, same day (2026-08-21): with only gpu_memory_utilization pinned,
-    # a real deploy crashed with "ValueError: max_num_seqs (1024) exceeds available
-    # Mamba cache blocks (603)." Qwen3.8-27B is a HYBRID Mamba/attention architecture
-    # (GDN — Gated DeltaNet), not the "dense, non-MoE" pure-transformer shape this
-    # study's README originally assumed — Mamba layers use a fixed-size recurrent
-    # cache block per sequence, distinct from and additionally constrained beyond the
-    # standard KV-cache budget gpu_memory_utilization controls. Left unrendered,
-    # vLLM's own auto-selected max_num_seqs (1024) doesn't fit that budget at
-    # gpu_memory_utilization=0.90 — so "every other parameter at vLLM's own stock
-    # default is safe" (the premise 1-goodput-realistic-load's design relies on,
-    # true for Qwen2.5-7B's pure-transformer shape) does NOT hold for this model.
-    # Fixed by also pinning vLLM.max_num_seqs: 256 (comfortably under the 603-block
-    # ceiling vLLM's own error message reported at gpu_memory_utilization=0.90) —
-    # verified against the real g7e.4xlarge node: model loads, engine initializes,
-    # `/health` returns 200, and a real `/v1/chat/completions` request completes
-    # successfully. Both incidents are documented in the study README's own
-    # "Incidents" section.
-    #
-    # The `optimize` step below sets neither field, so Akamas remains fully free to
-    # pick any parametersSelection value there for max_num_seqs (and every other
-    # tuned parameter) — this restriction is baseline-only. Note this means the
-    # optimizer CAN and will explore max_num_seqs values that hit this same Mamba
-    # cache ceiling during real experiments — that's expected and desirable (the
-    # optimizer needs to learn this boundary itself via failed experiments), unlike
-    # the baseline step, which needs a known-safe fixed configuration.
+    # HISTORY (superseded 2026-08-27): while this study targeted Qwen/Qwen3.8-27B (a
+    # HYBRID Mamba/attention architecture, GDN — Gated DeltaNet), a second incident
+    # required also pinning vLLM.max_num_seqs: 256 — left unrendered, vLLM's own
+    # auto-selected default (1024) exceeded that model's fixed-size Mamba cache-block
+    # budget ("ValueError: max_num_seqs (1024) exceeds available Mamba cache blocks
+    # (603)"), a constraint distinct from and additional to the standard KV-cache
+    # budget gpu_memory_utilization controls. That pin is REMOVED now that the model
+    # is back to Qwen2.5-7B-Instruct (see README "Model swap") — a pure-transformer,
+    # non-MoE shape for which "every other parameter at vLLM's own stock default is
+    # safe" (1-goodput-realistic-load's original premise) holds again, so
+    # vLLM.max_num_seqs is back in doNotRenderParameters below like every other tuned
+    # parameter. Both original incidents remain documented in the study README's own
+    # "Incidents" section for the record.
     #
     # The workflow's FileConfigurator task sets ignoreUnsubstitutedTokens: true so it
     # doesn't fail on the resulting unsubstituted ${vLLM.*} tokens; apply_config.sh's
@@ -158,8 +134,8 @@ steps:
     # before it's applied.
     values:
       vLLM.gpu_memory_utilization: 0.90
-      vLLM.max_num_seqs: 256
     doNotRenderParameters:
+      - vLLM.max_num_seqs
       - vLLM.max_num_batched_tokens
       - vLLM.kv_cache_dtype
       - vLLM.performance_mode

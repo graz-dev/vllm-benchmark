@@ -47,8 +47,8 @@ spec:
                 echo "No cached ShareGPT inputs.json — generating once (one-time ~5min dataset validation pass)..."
                 set +e
                 aiperf profile \
-                  --model qwen3-8-27b \
-                  --tokenizer Qwen/Qwen3.8-27B \
+                  --model qwen2.5-7b \
+                  --tokenizer Qwen/Qwen2.5-7B-Instruct \
                   --url http://vllm.llm-serving.svc.cluster.local:8000 \
                   --endpoint-type chat \
                   --streaming \
@@ -68,34 +68,40 @@ spec:
                 echo "Reusing cached ShareGPT inputs.json from $CACHE_FILE (skips dataset validation)."
               fi
 
-              # REVERTED 2026-08-23 to the original carried-forward list — the brief
-              # exploratory 5->150 detour (same day) turned out to be chasing the
-              # wrong cause. The actual root cause of the 100%-error-rate failures
-              # (at EVERY concurrency level tried, including 5 — ruling out overload
-              # entirely) was a STALE SHARED CACHE: this job's dataset cache file
-              # (/benchmarks/sharegpt-cache/inputs.json, on the aiperf-results PVC,
-              # shared across ALL studies in this repo's namespace/PVC-naming
-              # convention — same class of bug as vllm-model-cache's AZ/size
-              # mismatch found earlier this study) still had every request's
-              # "model" field hardcoded to "qwen2.5-7b" from `1-goodput-realistic-
-              # load`'s own July run — vLLM correctly 404'd every single request
-              # since it only serves "qwen3-8-27b". Fixed on the cluster by deleting
-              # the stale cache file so this job's own "if [ ! -f "$CACHE_FILE" ]"
-              # check regenerates it fresh with the correct model. Carried-forward,
-              # NOT YET RECALIBRATED (see README "Prerequisites still open" #3):
-              # this list (150->1024, log-spaced, 300s/level) was calibrated for
-              # Qwen2.5-7B-Instruct on an A10G in 1-goodput-realistic-load — see
-              # that study's README, "Sizing the concurrency sweep," for the full
-              # multi-week process this took. A ~4x larger, hybrid-Mamba model on
-              # different, lower-bandwidth GPU hardware will almost certainly
-              # saturate at a different concurrency range — still worth a real
-              # manual exploratory sweep before trusting this list for an
-              # `optimize` step, now that the actual blocker (stale cache) is fixed.
+              # HISTORY: the original 2026-08-25 g7e run hit a STALE SHARED CACHE bug
+              # — this job's dataset cache file (/benchmarks/sharegpt-cache/inputs.json,
+              # on the aiperf-results PVC, shared across ALL studies in this repo's
+              # namespace/PVC-naming convention — same class of bug as
+              # vllm-model-cache's AZ/size mismatch found earlier this study) had every
+              # request's "model" field hardcoded to "qwen2.5-7b" from
+              # `1-goodput-realistic-load`'s own July run, while this study was then
+              # serving "qwen3-8-27b" — 100% 404s at every concurrency level. Fixed at
+              # the time by deleting the stale cache file.
+              #
+              # CHANGED 2026-08-27: model reverted to Qwen2.5-7B-Instruct (see
+              # 01-deployment_template.yaml and README "Model swap") — now IDENTICAL
+              # to 1-goodput-realistic-load's model, so the cache will match again once
+              # regenerated. But the cache currently on the shared PVC has
+              # "qwen3-8-27b" baked in from this study's own 2026-08-25 g7e run — the
+              # exact same stale-cache bug would recur in reverse unless that cache
+              # file is deleted before the next run so this job's own
+              # "if [ ! -f "$CACHE_FILE" ]" check regenerates it fresh. Do this before
+              # trusting the next run (see README "Prerequisites still open").
+              #
+              # This list (150->1024, log-spaced, 300s/level) was calibrated for this
+              # exact model (Qwen2.5-7B-Instruct) on an A10G in 1-goodput-realistic-load
+              # — see that study's README, "Sizing the concurrency sweep," for the full
+              # multi-week process this took. Model is no longer a confound now that
+              # it matches exactly; only the GPU differs (A10G vs. g7e.4xlarge/
+              # Blackwell) — a more powerful GPU could still saturate at a different
+              # concurrency range, so a real manual exploratory check before trusting
+              # this list for an `optimize` step is still worthwhile, just a smaller
+              # risk than before.
               CONCURRENCY_LIST="150,179,213,253,302,359,428,509,606,722,860,1024"
 
               aiperf profile \
-                --model qwen3-8-27b \
-                --tokenizer Qwen/Qwen3.8-27B \
+                --model qwen2.5-7b \
+                --tokenizer Qwen/Qwen2.5-7B-Instruct \
                 --url http://vllm.llm-serving.svc.cluster.local:8000 \
                 --endpoint-type chat \
                 --streaming \

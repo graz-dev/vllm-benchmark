@@ -3,12 +3,14 @@
 **Created:** 2026-08-20
 
 Optimizes **goodput** — `vLLM.prefill_token_throughput + vLLM.decode_token_throughput`
-subject to a P95 TTFT ≤ 1500ms / P95 ITL ≤ 300ms SLA — for `Qwen/Qwen3.8-27B` (dense,
-27.8B parameters) served by vLLM on a single NVIDIA RTX PRO 6000 Blackwell 96GB
-(`g7e.4xlarge` — swapped 2026-08-21 from H100 80GB/`p5.4xlarge`, no regional capacity;
-see study `README.md`). Same objective and methodology as `1-goodput-realistic-load`,
-scaled to a ~4x larger model on different, higher-VRAM/lower-bandwidth single-GPU
-hardware — see the study's own top-level `README.md` for the full rationale.
+subject to a P95 TTFT ≤ 1500ms / P95 ITL ≤ 300ms SLA — for `Qwen/Qwen2.5-7B-Instruct`
+(reverted 2026-08-27 from `Qwen/Qwen3.8-27B`, dense 27.8B parameters — see study
+`README.md` "Model swap") served by vLLM on a single NVIDIA RTX PRO 6000 Blackwell
+96GB (`g7e.4xlarge` — swapped 2026-08-21 from H100 80GB/`p5.4xlarge`, no regional
+capacity; see study `README.md`). Same objective, methodology, AND model as
+`1-goodput-realistic-load` now — the only remaining variable between the two studies
+is the GPU (g7e.4xlarge/Blackwell SM120 here vs. A10G/Ampere there) — see the study's
+own top-level `README.md` for the full rationale.
 
 ## Versions
 
@@ -21,11 +23,11 @@ hardware — see the study's own top-level `README.md` for the full rationale.
   this build, some parameter domains referenced below (in particular `block_size`'s
   ordinal type and `tokenizer_mode`'s categories) may not match what's actually
   installed.
-- **Target workload**: `Qwen/Qwen3.8-27B`, image tag **`vllm/vllm-openai:v0.27.1`
-  (resolved 2026-08-21 via a real manual deploy, see study `README.md` "Prerequisites
-  still open" #2 — `v0.22.0` does not support this model)**. Still open: whether the
-  vLLM optimization pack's parameter set (built against `0.22.0`) still applies
-  cleanly to `0.27.1`.
+- **Target workload**: `Qwen/Qwen2.5-7B-Instruct`, image tag **`vllm/vllm-openai:v0.22.0`**
+  (reverted 2026-08-27 together with the model — see study `README.md` "Model swap" —
+  matching `1-goodput-realistic-load`'s own pin exactly). Still open: `v0.22.0` has not
+  yet been smoke-tested on this GPU's SM120 compute capability (only ever run on
+  A10G/Ampere and, briefly, `v0.27.1` on this g7e node for the abandoned 27B attempt).
 - **Telemetry provider**: Prometheus (via `kube-prometheus-stack`), same instance/query
   catalog as `1-goodput-realistic-load` — version not independently re-verified here
   either.
