@@ -123,3 +123,16 @@ metrics:
     datasourceMetric: 'avg by(gpu)(DCGM_FI_PROF_PIPE_FP16_ACTIVE{pod=~"$POD$", gpu=~"$GPU$"})'
   - metric: gpu_fp32_pipe_active
     datasourceMetric: 'avg by(gpu)(DCGM_FI_PROF_PIPE_FP32_ACTIVE{pod=~"$POD$", gpu=~"$GPU$"})'
+
+  # --- Model FLOPs Utilization (vLLM --enable-mfu-metrics, already on in this study's
+  #     deployment) — NEW 2026-08-28, added ONLY to this study for now:
+  #     estimated_flops_per_gpu, estimated_read_bytes_per_gpu,
+  #     estimated_write_bytes_per_gpu. Pack MR (feature/mfu-compute-bandwidth-metrics,
+  #     vLLM pack 1.5.1 -> 1.6.0) built and installed on the toolbox's live Akamas
+  #     instance 2026-08-28 — these metric names now resolve.
+  - metric: estimated_flops_per_gpu
+    datasourceMetric: 'sum(rate(vllm:estimated_flops_per_gpu_total{model_name=~"$MODEL$", pod=~"$POD$"}[1m])) / 1e12'
+  - metric: estimated_read_bytes_per_gpu
+    datasourceMetric: 'sum(rate(vllm:estimated_read_bytes_per_gpu_total{model_name=~"$MODEL$", pod=~"$POD$"}[1m])) / 1e9'
+  - metric: estimated_write_bytes_per_gpu
+    datasourceMetric: 'sum(rate(vllm:estimated_write_bytes_per_gpu_total{model_name=~"$MODEL$", pod=~"$POD$"}[1m])) / 1e9'

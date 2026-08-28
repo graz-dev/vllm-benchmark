@@ -19,7 +19,7 @@ goal:
   #    - name: ITL P95 interactive-chat SLA
   #      formula: vLLM.inter_token_latency_p95 <= 300
 
-# windowing:
+windowing:
   # CORRECTED 2026-08-23: width lowered from 12 to 6 to actually match
   # 1-goodput-realistic-load's own precedent — that study runs the same 12-level,
   # 300s/level sweep (150->1024, see k8s/05-job.yaml) but itself uses width=6, not
@@ -29,14 +29,16 @@ goal:
   # without a stated reason. Still coupled to the sweep, not independent — if the
   # concurrency list is ever recalibrated to a different level count (see study
   # README "Prerequisites still open" #3), revisit this value again.
-#  type: stability
-#  stability:
-#    metric: vLLM.prefill_token_throughput
-#    width: 6
-#    maxStdDev: 300000000
-#    when:
-#      metric: vLLM.prefill_token_throughput
-#      is: max
+  # RESTORED 2026-08-28: was commented out for the constraint-discovery run (single
+  # fixed concurrency=150, no sweep to window over) — back to the real sweep now.
+  type: stability
+  stability:
+    metric: vLLM.prefill_token_throughput
+    width: 6
+    maxStdDev: 300000000
+    when:
+      metric: vLLM.prefill_token_throughput
+      is: max
 
 parametersSelection:
   # Same 14 as 1-goodput-realistic-load — see that study's README for the full
@@ -100,6 +102,35 @@ parameterConstraints:
   # kv_cache_dtype=auto on any hardware this vLLM build runs on. Re-exclude.
   - name: FLASH_ATTN only supports auto kv_cache_dtype
     formula: vLLM.attention_backend != "FLASH_ATTN" || vLLM.kv_cache_dtype == "auto"
+
+  # RE-ADDED 2026-08-28 — actual observed failures, experiment 8 (confirmed
+  # attention_backend=TRITON_ATTN via the workflow task's own "non-default args"
+  # DEBUG log) and experiment 26 (same signature, backend not directly confirmed
+  # in that task's stdout): "AssertionError" in
+  # vllm/model_executor/layers/attention/attention.py:467, `assert
+  # self.kv_cache_dtype in {"fp8", "fp8_e4m3", "nvfp4"}` — the query-quant path
+  # only supports those three, and the only fp8-family value in this study's
+  # domain outside that set is fp8_e5m2.
+  #
+  # WIDENED same day after reading the actual vLLM source (v0.22.0, this image):
+  # this assert fires whenever the chosen backend's own
+  # `supports_quant_query_input` is True AND kv_cache_dtype starts with "fp8" —
+  # NOT just for TRITON_ATTN. Confirmed in source:
+  #   - triton_attn.py: `supports_quant_query_input = current_platform.is_cuda()`
+  #     — unconditionally True on any CUDA GPU.
+  #   - flashinfer.py: `supports_quant_query_input = self.support_trtllm_attn and
+  #     ... not vllm_config.attention_config.disable_flashinfer_q_quantization` —
+  #     conditionally True, so FLASHINFER+fp8_e5m2 can hit the exact same crash.
+  #   - FLASH_ATTN is already excluded from any non-auto kv_cache_dtype by the
+  #     constraint above, so it can't reach this path regardless.
+  # This looks like a vLLM-wide limitation (fp8_e5m2 genuinely isn't supported by
+  # its own query-quantization path), not a backend-specific or hardware-specific
+  # quirk — excluding both known-affected backends here rather than assuming only
+  # one is real.
+  - name: TRITON_ATTN does not support fp8_e5m2 kv_cache_dtype (query-quant bug)
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e5m2"
+  - name: FLASHINFER does not support fp8_e5m2 kv_cache_dtype (query-quant bug)
+    formula: vLLM.attention_backend != "FLASHINFER" || vLLM.kv_cache_dtype != "fp8_e5m2"
 
 steps:
   - name: baseline
@@ -176,6 +207,5 @@ steps:
 
   - name: optimize
     type: optimize
-    optimizer: SOBOL
     numberOfExperiments: 1000
     maxFailedExperiments: 200
