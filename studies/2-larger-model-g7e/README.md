@@ -241,6 +241,18 @@ the Ampere-vs-SM120 question directly was started 2026-08-27 but abandoned mid-f
 (the pod came up and stayed `Running` before being reverted, an unconfirmed but
 promising data point) in favor of this broader unconstrained-search approach instead.
 
+**`FLASH_ATTN`+`kv_cache_dtype` re-added, same day**: experiment 3 of the resulting
+(unconstrained) run hit exactly this — `attention_backend=FLASH_ATTN` with
+`kv_cache_dtype != auto` — and crash-looped for 20 minutes until
+`progressDeadlineSeconds` killed it (`ValueError: Selected backend
+AttentionBackendEnum.FLASH_ATTN is not valid for this configuration. Reason:
+['kv_cache_dtype not supported']`, from vLLM's own `platforms/cuda.py`). Unlike the
+other 5 removed constraints, this one isn't a hardware-specific carried-forward
+assumption — it's vLLM's own CUDA platform validation, true on any hardware this build
+runs on — so it's back in `akamas/2-Larger-Model-G7e.yaml`. The other 5 stay removed
+for now; re-add any of them the same way, only once this study's own experiments
+actually hit the failure they'd have prevented.
+
 ## Prerequisites still open before this study can be started
 
 `akamas/` and `k8s/` are now populated (2026-08-20) — see `akamas/README.md` for the

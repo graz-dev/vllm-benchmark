@@ -1,6 +1,6 @@
 kind: study
 
-name: 2-Larger-Model-G7e
+name: 2-Larger-goodput
 system: vLLM_Benchmark_2_Larger_Model_G7e
 workflow: 2-Larger-Model-G7e-Workflow
 
@@ -8,18 +8,18 @@ goal:
   objective: maximize
   function:
     formula: vLLM.prefill_token_throughput + vLLM.decode_token_throughput
-  constraints:
-    absolute:
+  # constraints:
+  #  absolute:
       # Carried forward unchanged from 1-goodput-realistic-load — same interactive-chat
       # starting-point thresholds, NOT derived from this study's own data (it hasn't run
       # yet). Recalibrate once this study's own baseline + first sweep-driven trials
       # report real TTFT/ITL numbers for this model/hardware, same as that study did.
-      - name: TTFT P95 interactive-chat SLA
-        formula: vLLM.time_to_first_token_p95 <= 1500
-      - name: ITL P95 interactive-chat SLA
-        formula: vLLM.inter_token_latency_p95 <= 300
+  #    - name: TTFT P95 interactive-chat SLA
+  #      formula: vLLM.time_to_first_token_p95 <= 1500
+  #    - name: ITL P95 interactive-chat SLA
+  #      formula: vLLM.inter_token_latency_p95 <= 300
 
-windowing:
+# windowing:
   # CORRECTED 2026-08-23: width lowered from 12 to 6 to actually match
   # 1-goodput-realistic-load's own precedent — that study runs the same 12-level,
   # 300s/level sweep (150->1024, see k8s/05-job.yaml) but itself uses width=6, not
@@ -29,14 +29,14 @@ windowing:
   # without a stated reason. Still coupled to the sweep, not independent — if the
   # concurrency list is ever recalibrated to a different level count (see study
   # README "Prerequisites still open" #3), revisit this value again.
-  type: stability
-  stability:
-    metric: vLLM.prefill_token_throughput
-    width: 6
-    maxStdDev: 300000000
-    when:
-      metric: vLLM.prefill_token_throughput
-      is: max
+#  type: stability
+#  stability:
+#    metric: vLLM.prefill_token_throughput
+#    width: 6
+#    maxStdDev: 300000000
+#    when:
+#      metric: vLLM.prefill_token_throughput
+#      is: max
 
 parametersSelection:
   # Same 14 as 1-goodput-realistic-load — see that study's README for the full
@@ -87,6 +87,19 @@ parametersSelection:
 # headroom. Re-add specific constraints here if a failure pattern turns out to be
 # common enough to be worth excluding again, informed by what this study's own
 # experiments actually hit rather than carried-forward assumptions from other hardware.
+
+parameterConstraints:
+  # RE-ADDED 2026-08-27 — NOT a carried-forward hardware assumption, an actual
+  # observed failure on THIS study, THIS hardware: experiment 3 picked
+  # attention_backend=FLASH_ATTN with kv_cache_dtype != auto (progress deadline
+  # exceeded after 2 crash-loop cycles; engine log: "ValueError: Selected backend
+  # AttentionBackendEnum.FLASH_ATTN is not valid for this configuration. Reason:
+  # ['kv_cache_dtype not supported']"). This is vLLM's own CUDA platform
+  # validation (vllm/platforms/cuda.py get_attn_backend_cls), not a Blackwell/SM120-
+  # specific or Ampere-specific quirk — FLASH_ATTN genuinely only supports
+  # kv_cache_dtype=auto on any hardware this vLLM build runs on. Re-exclude.
+  - name: FLASH_ATTN only supports auto kv_cache_dtype
+    formula: vLLM.attention_backend != "FLASH_ATTN" || vLLM.kv_cache_dtype == "auto"
 
 steps:
   - name: baseline
@@ -163,5 +176,6 @@ steps:
 
   - name: optimize
     type: optimize
+    optimizer: SOBOL
     numberOfExperiments: 1000
     maxFailedExperiments: 200

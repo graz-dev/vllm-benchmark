@@ -94,6 +94,12 @@ spec:
             # 1-goodput-realistic-load settled on after its 5 spec-decoding crashes:
             # the flags are simply omitted, so vLLM runs with speculative decoding off
             # by construction.
+          # ADDED 2026-08-28: DEBUG logging so the engine's actual resolved config
+          # (incl. computed defaults, e.g. max_num_seqs) shows up in pod logs. Comment
+          # out / remove to go back to default (INFO) verbosity.
+          env:
+            - name: VLLM_LOGGING_LEVEL
+              value: DEBUG
           ports:
             - name: http
               containerPort: 8000

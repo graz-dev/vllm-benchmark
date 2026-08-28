@@ -97,7 +97,19 @@ spec:
               # concurrency range, so a real manual exploratory check before trusting
               # this list for an `optimize` step is still worthwhile, just a smaller
               # risk than before.
-              CONCURRENCY_LIST="150,179,213,253,302,359,428,509,606,722,860,1024"
+              # CONCURRENCY_LIST="150,179,213,253,302,359,428,509,606,722,860,1024"
+
+              # CHANGED 2026-08-28 (explicit user decision, first constraint-discovery
+              # run): single fixed concurrency at the sweep's current lowest level
+              # (150) held for a constant 5 minutes, instead of the full 12-level
+              # sweep — this run's goal is to find real startup/runtime
+              # parameterConstraints across the unconstrained parametersSelection
+              # space (study renamed to "2-Larger-goodput", windowing/goal constraints
+              # commented out), not to measure goodput itself, so the full sweep is
+              # unnecessary cost per trial. Revert to the line above (and remove this
+              # one) to go back to the real 12-level sweep once constraint discovery
+              # is done.
+              CONCURRENCY_LIST="150"
 
               aiperf profile \
                 --model qwen2.5-7b \

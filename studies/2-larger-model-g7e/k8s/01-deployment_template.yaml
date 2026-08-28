@@ -117,6 +117,16 @@ spec:
             # trying this on this exact model: the flags are simply omitted, so vLLM
             # runs with speculative decoding off by construction — see README
             # "Parameters tuned".
+          # ADDED 2026-08-28 (explicit user decision, first constraint-discovery run):
+          # DEBUG logging so the engine's actual resolved config (incl. computed
+          # defaults for unrendered parameters, e.g. max_num_seqs when left to vLLM's
+          # own choice at baseline) shows up in the pod's own logs instead of staying
+          # opaque — see the earlier back-and-forth in this study's history about not
+          # being able to confirm the live baseline's resolved max_num_seqs value any
+          # other way. Comment out / remove to go back to default (INFO) verbosity.
+          env:
+            - name: VLLM_LOGGING_LEVEL
+              value: DEBUG
           ports:
             - name: http
               containerPort: 8000
