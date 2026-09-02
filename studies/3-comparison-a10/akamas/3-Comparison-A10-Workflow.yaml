@@ -1,0 +1,54 @@
+kind: workflow
+
+name: 3-Comparison-A10-Workflow
+tasks:
+  - name: Write config
+    operator: FileConfigurator
+    arguments:
+      # ignoreUnsubstitutedTokens: true is REQUIRED for the baseline step's
+      # doNotRenderParameters (see akamas/3-Comparison-A10.yaml, corrected 2026-08-21
+      # to match 1-goodput-realistic-load's design) to work at all: a parameter
+      # excluded via doNotRenderParameters has no computed value, so its ${vLLM.*}
+      # token is left unsubstituted in the rendered file. Without this flag,
+      # FileConfigurator would FAIL on every baseline trial. apply_config.sh's Step 2
+      # then strips those unsubstituted lines entirely before the file is applied.
+      ignoreUnsubstitutedTokens: true
+      source:
+        hostname: toolbox
+        username: akamas
+        key: /work/vllm-benchmark/studies/3-comparison-a10/akamas/id_rsa
+        path: /work/vllm-benchmark/studies/3-comparison-a10/k8s/01-deployment_template.yaml
+      target:
+        hostname: toolbox
+        username: akamas
+        key: /work/vllm-benchmark/studies/3-comparison-a10/akamas/id_rsa
+        path: /work/vllm-benchmark/studies/3-comparison-a10/k8s/01-deployment.yaml
+
+  - name: Apply config
+    operator: Executor
+    arguments:
+      retries: 0
+      # Longer than 1-goodput-realistic-load's 60m — this model's startupProbe alone
+      # budgets up to 20min (vs. that study's 10min) for a ~56GB weight load.
+      timeout: 75m
+      host:
+        hostname: toolbox
+        username: akamas
+        key: /work/vllm-benchmark/studies/3-comparison-a10/akamas/id_rsa
+      command: bash /work/vllm-benchmark/studies/3-comparison-a10/k8s/apply_config.sh
+
+  - name: RunTest
+    operator: Executor
+    arguments:
+      # Raised 2026-08-24 alongside run_test_goodput.sh's kubectl wait (4500s/75m ->
+      # 5700s/95m, see that script's own comment on the dataset-configuration-timeout
+      # incident): k8s/run_test_goodput.sh itself now waits up to 5700s (95m); this
+      # task's own timeout keeps the same 15min margin above that, matching
+      # 1-goodput-realistic-load's convention.
+      retries: 0
+      timeout: 105m
+      host:
+        hostname: toolbox
+        username: akamas
+        key: /work/vllm-benchmark/studies/3-comparison-a10/akamas/id_rsa
+      command: bash /work/vllm-benchmark/studies/3-comparison-a10/k8s/run_test_goodput.sh

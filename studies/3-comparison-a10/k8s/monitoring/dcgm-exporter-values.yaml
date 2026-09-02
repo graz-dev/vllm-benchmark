@@ -1,0 +1,43 @@
+# Helm values for NVIDIA DCGM Exporter.
+# Exposes GPU hardware metrics (utilisation, VRAM, power, temperature) to Prometheus.
+#
+# CHANGED for 3-comparison-a10: this study runs on the EXISTING A10G node group
+# (llm-serving) — a DCGM Exporter DaemonSet is already running cluster-wide there
+# from 0-explorative's provisioning (Helm release `dcgm-exporter`, nodeSelector
+# node-role: llm-serving). Do NOT install a second release here — unlike
+# 2-larger-model-g7e (which needed its own `dcgm-exporter-g7e` release for its new
+# node group), this study reuses the existing one as-is. Nothing to install; this
+# file documents what's already running, matching 1-goodput-realistic-load's own copy.
+
+# Run on the A10G node (node-role: llm-serving) — same node group
+# 0-explorative/1-goodput-realistic-load use.
+nodeSelector:
+  node-role: llm-serving
+
+# Required to schedule on the tainted GPU node.
+tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+
+# Let Prometheus (via kube-prometheus-stack) scrape DCGM metrics every 5 s.
+# serviceMonitorSelectorNilUsesHelmValues: false in prometheus values ensures
+# this ServiceMonitor is picked up without needing extra labels.
+serviceMonitor:
+  enabled: true
+  interval: 5s
+  scrapeTimeout: 4s
+  namespace: monitoring
+
+extraConfigMapVolumes:
+- name: exporter-metrics-volume
+  configMap:
+    name: dcgm-custom-metrics
+    items:
+    - key: metrics
+      path: dcgm_counters.csv
+
+extraVolumeMounts:
+- name: exporter-metrics-volume
+  mountPath: /etc/dcgm-exporter/default-counters.csv
+  subPath: dcgm_counters.csv

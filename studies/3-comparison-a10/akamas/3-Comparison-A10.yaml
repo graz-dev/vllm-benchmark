@@ -1,0 +1,236 @@
+kind: study
+
+name: 3-Comparison-A10
+system: vLLM_Benchmark_3_Comparison_A10
+workflow: 3-Comparison-A10-Workflow
+
+goal:
+  objective: maximize
+  function:
+    formula: vLLM.prefill_token_throughput + vLLM.decode_token_throughput
+  constraints:
+    absolute:
+      # Carried forward unchanged from 1-goodput-realistic-load — same interactive-chat
+      # starting-point thresholds, NOT derived from this study's own data (it hasn't run
+      # yet). Recalibrate once this study's own baseline + first sweep-driven trials
+      # report real TTFT/ITL numbers for this model/hardware, same as that study did.
+      # RESTORED 2026-09-02: was commented out for the constraint-discovery run.
+      - name: TTFT P95 interactive-chat SLA
+        formula: vLLM.time_to_first_token_p95 <= 1500
+      - name: ITL P95 interactive-chat SLA
+        formula: vLLM.inter_token_latency_p95 <= 300
+
+windowing:
+  # CORRECTED 2026-08-23: width lowered from 12 to 6 to actually match
+  # 1-goodput-realistic-load's own precedent — that study runs the same 12-level,
+  # 300s/level sweep (150->1024, see k8s/05-job.yaml) but itself uses width=6, not
+  # width=12 (see its own study YAML comment: "kept at the same value used for
+  # earlier 6-level sweeps rather than bumped to 12 to match the sweep's current
+  # level count"). This study's original width=12 deviated from that precedent
+  # without a stated reason. Still coupled to the sweep, not independent — if the
+  # concurrency list is ever recalibrated to a different level count (see study
+  # README "Prerequisites still open" #3), revisit this value again.
+  # RESTORED 2026-08-28: was commented out for the constraint-discovery run (single
+  # fixed concurrency=150, no sweep to window over) — back to the real sweep now.
+  type: stability
+  stability:
+    metric: vLLM.prefill_token_throughput
+    width: 6
+    maxStdDev: 300000000
+    when:
+      metric: vLLM.prefill_token_throughput
+      is: max
+
+parametersSelection:
+  # Same 14 as 1-goodput-realistic-load — see that study's README for the full
+  # per-parameter rationale, largely hardware/model-independent.
+  - name: vLLM.gpu_memory_utilization
+    domain: [0.85, 0.95]
+  - name: vLLM.max_num_seqs
+    domain: [16, 1024]
+  - name: vLLM.max_num_batched_tokens
+    domain: [256, 8192]
+  - name: vLLM.kv_cache_dtype
+    categories: [auto, fp8, fp8_e4m3, fp8_e5m2]
+  - name: vLLM.performance_mode
+    categories: [balanced, interactivity, throughput]
+  - name: vLLM.optimization_level
+    domain: [0, 3]
+  - name: vLLM.enforce_eager
+    categories: ["true", "false"]
+  - name: vLLM.scheduling_policy
+    categories: [fcfs, priority]
+  - name: vLLM.disable_cascade_attn
+    categories: ["true", "false"]
+  - name: vLLM.tokenizer_mode
+    categories: [auto, hf, slow]
+  - name: vLLM.async_scheduling
+    categories: ["true", "false"]
+  - name: vLLM.max_cudagraph_capture_size
+    domain: [1, 1024]
+  - name: vLLM.block_size
+    categories: ["16", "32", "48", "64", "80", "96", "112", "128"]
+  - name: vLLM.attention_backend
+    categories: [FLASH_ATTN, FLASHINFER, TRITON_ATTN]
+
+# vLLM.spec_method / vLLM.spec_tokens are deliberately absent from BOTH
+# parametersSelection and every step's `values` below — same as vLLM.
+# prefix_caching_hash_algo and vLLM.compilation_mode. None of the four is referenced by
+# k8s/01-deployment_template.yaml, so none of them ever renders for this study at all.
+
+# REMOVED 2026-08-27 (explicit user decision): this study previously carried forward
+# all 6 of 1-goodput-realistic-load's parameterConstraints (FLASH_ATTN+kv_cache_dtype,
+# FlashInfer+block_size, max_num_batched_tokens>=max_num_seqs, and 3 TRITON_ATTN+fp8
+# exclusions root-caused on Ampere/A10G — see git history for the exact formulas). All
+# removed so the optimizer explores the full, unconstrained parametersSelection space
+# on this hardware (RTX PRO 6000 Blackwell, SM120) — including combinations previously
+# excluded as known-invalid on Ampere or by vLLM's own CLI validation. Expect more
+# failed experiments as a result (invalid combos now surface as real vLLM startup
+# errors instead of being pre-excluded) — `maxFailedExperiments: 200` below has ample
+# headroom. Re-add specific constraints here if a failure pattern turns out to be
+# common enough to be worth excluding again, informed by what this study's own
+# experiments actually hit rather than carried-forward assumptions from other hardware.
+
+parameterConstraints:
+  # RE-ADDED 2026-08-27 — NOT a carried-forward hardware assumption, an actual
+  # observed failure on THIS study, THIS hardware: experiment 3 picked
+  # attention_backend=FLASH_ATTN with kv_cache_dtype != auto (progress deadline
+  # exceeded after 2 crash-loop cycles; engine log: "ValueError: Selected backend
+  # AttentionBackendEnum.FLASH_ATTN is not valid for this configuration. Reason:
+  # ['kv_cache_dtype not supported']"). This is vLLM's own CUDA platform
+  # validation (vllm/platforms/cuda.py get_attn_backend_cls), not a Blackwell/SM120-
+  # specific or Ampere-specific quirk — FLASH_ATTN genuinely only supports
+  # kv_cache_dtype=auto on any hardware this vLLM build runs on. Re-exclude.
+  - name: FLASH_ATTN only supports auto kv_cache_dtype
+    formula: vLLM.attention_backend != "FLASH_ATTN" || vLLM.kv_cache_dtype == "auto"
+
+  # RE-ADDED 2026-08-28 — actual observed failures, experiment 8 (confirmed
+  # attention_backend=TRITON_ATTN via the workflow task's own "non-default args"
+  # DEBUG log) and experiment 26 (same signature, backend not directly confirmed
+  # in that task's stdout): "AssertionError" in
+  # vllm/model_executor/layers/attention/attention.py:467, `assert
+  # self.kv_cache_dtype in {"fp8", "fp8_e4m3", "nvfp4"}` — the query-quant path
+  # only supports those three, and the only fp8-family value in this study's
+  # domain outside that set is fp8_e5m2.
+  #
+  # WIDENED same day after reading the actual vLLM source (v0.22.0, this image):
+  # this assert fires whenever the chosen backend's own
+  # `supports_quant_query_input` is True AND kv_cache_dtype starts with "fp8" —
+  # NOT just for TRITON_ATTN. Confirmed in source:
+  #   - triton_attn.py: `supports_quant_query_input = current_platform.is_cuda()`
+  #     — unconditionally True on any CUDA GPU.
+  #   - flashinfer.py: `supports_quant_query_input = self.support_trtllm_attn and
+  #     ... not vllm_config.attention_config.disable_flashinfer_q_quantization` —
+  #     conditionally True, so FLASHINFER+fp8_e5m2 can hit the exact same crash.
+  #   - FLASH_ATTN is already excluded from any non-auto kv_cache_dtype by the
+  #     constraint above, so it can't reach this path regardless.
+  # This looks like a vLLM-wide limitation (fp8_e5m2 genuinely isn't supported by
+  # its own query-quantization path), not a backend-specific or hardware-specific
+  # quirk — excluding both known-affected backends here rather than assuming only
+  # one is real.
+  - name: TRITON_ATTN does not support fp8_e5m2 kv_cache_dtype (query-quant bug)
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e5m2"
+  - name: FLASHINFER does not support fp8_e5m2 kv_cache_dtype (query-quant bug)
+    formula: vLLM.attention_backend != "FLASHINFER" || vLLM.kv_cache_dtype != "fp8_e5m2"
+
+  # RE-ADDED for 3-comparison-a10 (2026-09-02): 0-explorative root-caused these two
+  # TRITON_ATTN+fp8-family exclusions ON THIS EXACT HARDWARE (A10G/Ampere) — see that
+  # study's README. 2-larger-model-g7e removed them (2026-08-27) to test whether they
+  # were Ampere-specific on a different GPU, and only re-confirmed the fp8_e5m2
+  # query-quant bug as vLLM-wide (above) — it never re-tested fp8/fp8_e4m3 on Ampere,
+  # so no evidence exists that these two are no longer needed here. Re-adding them
+  # preemptively (not waiting to rediscover them via a crash) since this study is
+  # specifically going back to the hardware they were found on.
+  - name: TRITON_ATTN does not support fp8 kv_cache_dtype on Ampere
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8"
+  - name: TRITON_ATTN does not support fp8_e4m3 kv_cache_dtype on Ampere
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e4m3"
+
+  # RE-ADDED for 3-comparison-a10 (2026-09-02): these 2 are in
+  # 1-goodput-realistic-load/0-explorative's own parameterConstraints but were never
+  # carried into 2-larger-model-g7e's scaffold (that study's baseline started from a
+  # different design and this scaffold was cloned from it, not from 1-goodput's own
+  # file) — neither is hardware-specific, both are vLLM's own kernel/scheduler
+  # requirements, so they apply here regardless of GPU:
+  - name: FlashInfer only supports block_size 16, 32, or 64
+    formula: vLLM.attention_backend != "FLASHINFER" || vLLM.block_size == "16" || vLLM.block_size == "32" || vLLM.block_size == "64"
+  - name: max_num_batched_tokens must be at least max_num_seqs
+    formula: vLLM.max_num_batched_tokens >= vLLM.max_num_seqs
+
+steps:
+  - name: baseline
+    type: baseline
+    numberOfTrials: 1
+    # NOW MATCHES 1-goodput-realistic-load's baseline design (corrected 2026-08-21 —
+    # this step previously pinned all 25 other parameters explicitly via `values`
+    # instead; see git history / study README for that superseded design and why it
+    # changed: a manual smoke-test deploy against the real vllm/vllm-openai:latest
+    # image crashed with "unrecognized arguments: --max-num-partial-prefills=1
+    # --max-long-partial-prefills=1" — those two CLI flags no longer exist on this
+    # vLLM build, proving pinned-defaultValue rendering is not safe to assume stable
+    # across vLLM versions the way this study already treats attention_backend/
+    # kv_cache_dtype compatibility).
+    #
+    # doNotRenderParameters below lists every vLLM.* parameter EXCEPT
+    # gpu_memory_utilization — all 13 other tuned parameters plus all 12 pinned
+    # parameters referenced by k8s/01-deployment_template.yaml. Every excluded
+    # parameter is left unrendered, so vLLM applies its own real defaults for all of
+    # them — this is deliberately vLLM's standard, most-tested startup path, and it
+    # sidesteps flag-name drift like the partial-prefills incident above: a flag that
+    # no longer exists simply never gets rendered onto the command line at baseline.
+    #
+    # gpu_memory_utilization still needs the explicit `values:` pin (not just "leave
+    # it un-excluded and let it render at its pack default") because the pack's own
+    # defaultValue for it is 0.92, not the 0.90 this study's baseline wants.
+    #
+    # HISTORY (superseded 2026-08-27): while this study targeted Qwen/Qwen3.8-27B (a
+    # HYBRID Mamba/attention architecture, GDN — Gated DeltaNet), a second incident
+    # required also pinning vLLM.max_num_seqs: 256 — left unrendered, vLLM's own
+    # auto-selected default (1024) exceeded that model's fixed-size Mamba cache-block
+    # budget ("ValueError: max_num_seqs (1024) exceeds available Mamba cache blocks
+    # (603)"), a constraint distinct from and additional to the standard KV-cache
+    # budget gpu_memory_utilization controls. That pin is REMOVED now that the model
+    # is back to Qwen2.5-7B-Instruct (see README "Model swap") — a pure-transformer,
+    # non-MoE shape for which "every other parameter at vLLM's own stock default is
+    # safe" (1-goodput-realistic-load's original premise) holds again, so
+    # vLLM.max_num_seqs is back in doNotRenderParameters below like every other tuned
+    # parameter. Both original incidents remain documented in the study README's own
+    # "Incidents" section for the record.
+    #
+    # The workflow's FileConfigurator task sets ignoreUnsubstitutedTokens: true so it
+    # doesn't fail on the resulting unsubstituted ${vLLM.*} tokens; apply_config.sh's
+    # Step 2 then strips those literal unsubstituted lines from the rendered file
+    # before it's applied.
+    values:
+      vLLM.gpu_memory_utilization: 0.90
+    doNotRenderParameters:
+      - vLLM.max_num_seqs
+      - vLLM.max_num_batched_tokens
+      - vLLM.kv_cache_dtype
+      - vLLM.performance_mode
+      - vLLM.optimization_level
+      - vLLM.block_size
+      - vLLM.attention_backend
+      - vLLM.enforce_eager
+      - vLLM.scheduling_policy
+      - vLLM.disable_cascade_attn
+      - vLLM.tokenizer_mode
+      - vLLM.async_scheduling
+      - vLLM.max_cudagraph_capture_size
+      - vLLM.tensor_parallel_size
+      - vLLM.pipeline_parallel_size
+      - vLLM.data_parallel_size
+      - vLLM.enable_expert_parallel
+      - vLLM.disable_custom_all_reduce
+      - vLLM.dtype
+      - vLLM.decode_context_parallel_size
+      - vLLM.prefill_context_parallel_size
+      - vLLM.max_num_partial_prefills
+      - vLLM.max_long_partial_prefills
+      - vLLM.long_prefill_token_threshold
+      - vLLM.max_model_len
+
+  - name: optimize
+    type: optimize
+    numberOfExperiments: 1000
+    maxFailedExperiments: 200

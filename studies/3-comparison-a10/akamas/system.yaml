@@ -1,0 +1,4 @@
+kind: system
+
+name: vLLM_Benchmark_3_Comparison_A10
+description: Goodput study for 3-comparison-a10 (Qwen/Qwen2.5-7B-Instruct on a single NVIDIA A10G / g5.2xlarge — identical config to 2-larger-model-g7e, re-run on A10G/Ampere for a direct hardware comparison, see study README — vLLM optimization pack 1.6.0 — TODO, re-verify the installed pack version before creating this system, see study README "Prerequisites still open")
