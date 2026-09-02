@@ -8,16 +8,17 @@ goal:
   objective: maximize
   function:
     formula: vLLM.prefill_token_throughput + vLLM.decode_token_throughput
-  # constraints:
-  #  absolute:
+  constraints:
+    absolute:
       # Carried forward unchanged from 1-goodput-realistic-load — same interactive-chat
       # starting-point thresholds, NOT derived from this study's own data (it hasn't run
       # yet). Recalibrate once this study's own baseline + first sweep-driven trials
       # report real TTFT/ITL numbers for this model/hardware, same as that study did.
-  #    - name: TTFT P95 interactive-chat SLA
-  #      formula: vLLM.time_to_first_token_p95 <= 1500
-  #    - name: ITL P95 interactive-chat SLA
-  #      formula: vLLM.inter_token_latency_p95 <= 300
+      # RESTORED 2026-09-02: was commented out for the constraint-discovery run.
+      - name: TTFT P95 interactive-chat SLA
+        formula: vLLM.time_to_first_token_p95 <= 1500
+      - name: ITL P95 interactive-chat SLA
+        formula: vLLM.inter_token_latency_p95 <= 300
 
 windowing:
   # CORRECTED 2026-08-23: width lowered from 12 to 6 to actually match
