@@ -1,0 +1,149 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: llm-serving
+spec:
+  replicas: 1
+  # CONFIRMED 2026-08-21 on 2-larger-model-g7e (real manual deploy): Kubernetes'
+  # default progressDeadlineSeconds (600s/10min) is shorter than this Deployment's own
+  # startupProbe budget (up to 20min) — the real rollout hit
+  # "ProgressDeadlineExceeded" at ~10min while the pod was still legitimately loading
+  # (not crashed; Running throughout). This status flag doesn't kill the pod, but
+  # `kubectl rollout status` (used by k8s/apply_config.sh) treats it as a failure —
+  # in a real Akamas experiment this would fail the "Apply config" task on an
+  # otherwise-healthy, just-slow-to-start trial. Set above the startupProbe's own
+  # ~20min ceiling (120 x 10s) so the two stay consistent.
+  progressDeadlineSeconds: 1200
+  # Recreate terminates the old pod before creating the new one.
+  # RollingUpdate (default) would deadlock here: the new pod waits for the GPU
+  # held by the old pod, which won't be killed until the new pod is ready.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
+    spec:
+      enableServiceLinks: false
+
+      # Same node group as 2-larger-model-g7e (llm-serving-g7e, g7e.4xlarge/RTX PRO
+      # 6000 Blackwell) — this study deliberately stays on this hardware, unlike
+      # 3-comparison-a10.
+      nodeSelector:
+        node-role: llm-serving-g7e
+
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+
+      containers:
+        - name: vllm
+          # Qwen2.5-7B-Instruct, vllm/vllm-openai:v0.22.0 — identical to
+          # 2-larger-model-g7e's own final config.
+          image: vllm/vllm-openai:v0.22.0
+          command: ["vllm", "serve"]
+          args:
+            - "Qwen/Qwen2.5-7B-Instruct"
+            - "--served-model-name=qwen2.5-7b"
+            - "--port=8000"
+            - "--host=0.0.0.0"
+            - "--enable-mfu-metrics"
+            - "--no-enable-prefix-caching"
+
+            # --- Tuned — reproduces 2-larger-model-g7e's own best-found trial
+            #     (experiment 28, score 18609.90 tokens/s) exactly. This snapshot
+            #     shows the baseline step's rendering; the preset step is identical
+            #     except --max-num-seqs=2048 (see akamas/4-Goodput-Extended.yaml). ---
+            - "--gpu-memory-utilization=0.9038662948590256"
+            - "--max-num-seqs=1020"
+            - "--max-num-batched-tokens=2640"
+            - "--kv-cache-dtype=fp8_e4m3"
+            - "--performance-mode=balanced"
+            - "--optimization-level=0"
+            - "--block-size=128"
+            - "--attention-backend=TRITON_ATTN"
+            # BooleanOptionalAction flags (enforce_eager, disable_cascade_attn,
+            # async_scheduling) only accept the bare --flag/--no-flag form — vLLM's
+            # argparse rejects "--flag=true"/"--flag=false" outright ("ignored
+            # explicit argument"). All three are "true" for experiment 28, so bare
+            # form here. Akamas's real FileConfigurator renders these correctly on
+            # its own; this is a fix to this hand-authored reference file only.
+            - "--enforce-eager"
+            - "--scheduling-policy=fcfs"
+            - "--disable-cascade-attn"
+            - "--tokenizer-mode=auto"
+            - "--async-scheduling"
+            - "--max-cudagraph-capture-size=981"
+
+            # --- Excluded entirely (explicit user decision, 2026-09-04): no
+            #     tensor_parallel_size, pipeline_parallel_size, data_parallel_size,
+            #     enable_expert_parallel, disable_custom_all_reduce, dtype,
+            #     decode_context_parallel_size, prefill_context_parallel_size,
+            #     max_num_partial_prefills, max_long_partial_prefills,
+            #     long_prefill_token_threshold, or max_model_len flags at all — vLLM
+            #     applies its own real defaults for all 12, unlike
+            #     2-larger-model-g7e which pins/attempts to pin them. ---
+
+            # No --spec-method/--spec-tokens flags here at all — same approach
+            # 1-goodput-realistic-load settled on after its 5 spec-decoding crashes
+            # trying this on this exact model: the flags are simply omitted, so vLLM
+            # runs with speculative decoding off by construction.
+          env:
+            - name: VLLM_LOGGING_LEVEL
+              value: DEBUG
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          # Sized for g7e.4xlarge's 128GiB total RAM (same as 2-larger-model-g7e) —
+          # generous relative to Qwen2.5-7B-Instruct's ~15GB of weights, no downside
+          # to the extra headroom.
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+              cpu: "8"
+              memory: "32Gi"
+            limits:
+              nvidia.com/gpu: "1"
+              cpu: "14"
+              memory: "100Gi"
+
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            failureThreshold: 120
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 30
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 60
+            failureThreshold: 3
+
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+            - name: model-cache
+              mountPath: /root/.cache/huggingface
+
+      volumes:
+        # vLLM uses shared memory for CUDA IPC handles between workers.
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 12Gi
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: vllm-model-cache

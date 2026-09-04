@@ -1,0 +1,106 @@
+kind: study
+
+name: 4-Goodput-Extended
+system: vLLM_Benchmark_4_Goodput_Extended
+workflow: 4-Goodput-Extended-Workflow
+
+goal:
+  objective: maximize
+  function:
+    formula: vLLM.prefill_token_throughput + vLLM.decode_token_throughput
+  constraints:
+    absolute:
+      # Same SLA as 2-larger-model-g7e/1-goodput-realistic-load — kept for a
+      # comparable, SLA-aware score, even though this study doesn't optimize.
+      - name: TTFT P95 interactive-chat SLA
+        formula: vLLM.time_to_first_token_p95 <= 1500
+      - name: ITL P95 interactive-chat SLA
+        formula: vLLM.inter_token_latency_p95 <= 300
+
+windowing:
+  # Same as 2-larger-model-g7e (width: 6) — kept identical so this study's scores are
+  # computed the same way as the trial they're reproducing/extending, making them
+  # directly comparable.
+  type: stability
+  stability:
+    metric: vLLM.prefill_token_throughput
+    width: 6
+    maxStdDev: 300000000
+    when:
+      metric: vLLM.prefill_token_throughput
+      is: max
+
+# NO parametersSelection / parameterConstraints in this study — explicit design
+# decision (2026-09-04): this study runs exactly 2 fixed-configuration trials
+# (baseline + preset below), no optimize step, so there's nothing for an optimizer to
+# search and no domain for it to violate. This also sidesteps a real constraint: the
+# preset step's max_num_seqs=2048 (see below) is OUTSIDE 2-larger-model-g7e's own
+# parametersSelection domain for that parameter ([16, 1024]) — omitting
+# parametersSelection entirely avoids a domain violation that pinning it there would
+# otherwise cause.
+
+steps:
+  - name: baseline
+    type: baseline
+    numberOfTrials: 1
+    # Reproduces 2-larger-model-g7e's own best-found trial exactly (experiment 28,
+    # score 18609.90 tokens/s, +57.41% vs. that study's baseline — see the CSV row this
+    # study was scaffolded from). All 14 tuned parameters pinned to their exact winning
+    # values via `values:` below, rather than the doNotRenderParameters pattern
+    # 2-larger-model-g7e's own baseline uses — this step needs a REPRODUCTION of a
+    # specific known-good config, not vLLM's own defaults.
+    #
+    # The 12 "Pinned" (non-tuned) parameters from 2-larger-model-g7e's own README
+    # table are deliberately NOT referenced here at all (explicit user decision,
+    # 2026-09-04) — k8s/01-deployment_template.yaml has no ${vLLM.*} token for any of
+    # them, so their flags are simply absent from the vLLM command line and vLLM
+    # applies its own real defaults unconditionally. This sidesteps the genuine,
+    # never-resolved ambiguity 2-larger-model-g7e's own README flags about what these
+    # 12 actually rendered as during its optimize step.
+    values:
+      vLLM.async_scheduling: "true"
+      vLLM.attention_backend: TRITON_ATTN
+      vLLM.block_size: "128"
+      vLLM.disable_cascade_attn: "true"
+      vLLM.enforce_eager: "true"
+      vLLM.gpu_memory_utilization: 0.9038662948590256
+      vLLM.kv_cache_dtype: fp8_e4m3
+      vLLM.max_cudagraph_capture_size: 981
+      vLLM.max_num_batched_tokens: 2640
+      vLLM.max_num_seqs: 1020
+      vLLM.optimization_level: 0
+      vLLM.performance_mode: balanced
+      vLLM.scheduling_policy: fcfs
+      vLLM.tokenizer_mode: auto
+
+  - name: preset
+    type: preset
+    numberOfTrials: 1
+    # Identical to the baseline step above except vLLM.max_num_seqs: 2048 instead of
+    # 1020 — tests whether pushing concurrency capacity further, matched by the
+    # extended concurrency sweep in k8s/05-job.yaml (now reaching 2048, double
+    # 2-larger-model-g7e's own 1024 ceiling), buys additional goodput beyond the
+    # already-found optimum. vLLM.max_num_batched_tokens is left unchanged at 2640
+    # (same as baseline) — max_num_batched_tokens >= max_num_seqs is a real vLLM
+    # scheduler requirement (see sibling studies' parameterConstraints), and
+    # 2640 >= 2048 still holds, so no adjustment needed.
+    values:
+      # Same as baseline except max_num_seqs — the 12 "Pinned" params are absent here
+      # too, same reasoning as the baseline step above.
+      vLLM.async_scheduling: "true"
+      vLLM.attention_backend: TRITON_ATTN
+      vLLM.block_size: "128"
+      vLLM.disable_cascade_attn: "true"
+      vLLM.enforce_eager: "true"
+      vLLM.gpu_memory_utilization: 0.9038662948590256
+      vLLM.kv_cache_dtype: fp8_e4m3
+      vLLM.max_cudagraph_capture_size: 981
+      vLLM.max_num_batched_tokens: 2640
+      vLLM.max_num_seqs: 2048
+      vLLM.optimization_level: 0
+      vLLM.performance_mode: balanced
+      vLLM.scheduling_policy: fcfs
+      vLLM.tokenizer_mode: auto
+
+# No optimize step — explicit user decision (2026-09-04). This study only ever runs
+# the 2 trials above.

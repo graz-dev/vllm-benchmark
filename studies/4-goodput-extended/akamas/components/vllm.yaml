@@ -1,0 +1,10 @@
+kind: component
+system: vLLM_Benchmark_4_Goodput_Extended
+
+name: vLLM
+description: vLLM component type
+componentType: vLLM
+properties:
+  prometheus:
+    pod: .*
+    model: .*

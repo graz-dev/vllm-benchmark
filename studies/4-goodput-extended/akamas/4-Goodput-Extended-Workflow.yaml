@@ -1,0 +1,52 @@
+kind: workflow
+
+name: 4-Goodput-Extended-Workflow
+tasks:
+  - name: Write config
+    operator: FileConfigurator
+    arguments:
+      # ignoreUnsubstitutedTokens: true kept for consistency with the sibling studies'
+      # workflow files, though this study's baseline/preset steps pin every referenced
+      # parameter explicitly via `values:` (no doNotRenderParameters here — see
+      # akamas/4-Goodput-Extended.yaml), so no token should actually go unsubstituted
+      # in practice. Harmless to leave set.
+      ignoreUnsubstitutedTokens: true
+      source:
+        hostname: toolbox
+        username: akamas
+        key: /work/vllm-benchmark/studies/4-goodput-extended/akamas/id_rsa
+        path: /work/vllm-benchmark/studies/4-goodput-extended/k8s/01-deployment_template.yaml
+      target:
+        hostname: toolbox
+        username: akamas
+        key: /work/vllm-benchmark/studies/4-goodput-extended/akamas/id_rsa
+        path: /work/vllm-benchmark/studies/4-goodput-extended/k8s/01-deployment.yaml
+
+  - name: Apply config
+    operator: Executor
+    arguments:
+      retries: 0
+      # Same as 2-larger-model-g7e — this model's startupProbe budgets up to 20min
+      # (vs. 1-goodput-realistic-load's 10min for the same model, generous headroom
+      # left as-is).
+      timeout: 75m
+      host:
+        hostname: toolbox
+        username: akamas
+        key: /work/vllm-benchmark/studies/4-goodput-extended/akamas/id_rsa
+      command: bash /work/vllm-benchmark/studies/4-goodput-extended/k8s/apply_config.sh
+
+  - name: RunTest
+    operator: Executor
+    arguments:
+      # Raised 2026-09-04 for this study's extended 24-level concurrency sweep (double
+      # 2-larger-model-g7e's 12 levels, up to 2048): k8s/run_test_goodput.sh's own
+      # kubectl wait now goes up to 9300s (155m) — this task's own timeout keeps the
+      # same 15min margin above that, matching the repo's convention.
+      retries: 0
+      timeout: 170m
+      host:
+        hostname: toolbox
+        username: akamas
+        key: /work/vllm-benchmark/studies/4-goodput-extended/akamas/id_rsa
+      command: bash /work/vllm-benchmark/studies/4-goodput-extended/k8s/run_test_goodput.sh

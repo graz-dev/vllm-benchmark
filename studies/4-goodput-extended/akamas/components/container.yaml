@@ -1,0 +1,6 @@
+kind: component
+system: vLLM_Benchmark_4_Goodput_Extended
+
+name: container
+description: Container component type
+componentType: Kubernetes Container

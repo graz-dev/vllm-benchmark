@@ -1,0 +1,159 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aiperf-benchmark
+  namespace: llm-benchmark
+spec:
+  # Do not retry on failure — a failed benchmark should be inspected, not silently retried.
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+
+      # Run on the CPU node; the GPU node(s) are tainted exclusively for vLLM.
+      nodeSelector:
+        node-role: system
+
+      initContainers:
+        # Poll vLLM's /health endpoint until the model is fully loaded.
+        - name: wait-for-vllm
+          image: alpine:3
+          command:
+            - sh
+            - -c
+            - |
+              until wget -qO- http://vllm.llm-serving.svc.cluster.local:8000/health >/dev/null 2>&1; do
+                echo "$(date -u +%T) waiting for vLLM readiness..."
+                sleep 10
+              done
+              echo "vLLM is ready."
+
+      containers:
+        # Same tool/version as 1-goodput-realistic-load — see that study's README
+        # "Load generator" for the full reasoning (AIPerf's closed-loop --concurrency
+        # model is self-limiting near saturation, unlike open-loop rate-based tools).
+        - name: aiperf
+          image: python:3.12-slim
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              pip install --quiet aiperf==0.11.0
+
+              find /benchmarks -mindepth 1 -maxdepth 1 -name 'aiperf-*' -exec rm -rf {} +
+
+              CACHE_FILE=/benchmarks/sharegpt-cache/inputs.json
+              if [ ! -f "$CACHE_FILE" ]; then
+                echo "No cached ShareGPT inputs.json — generating once (one-time ~5min dataset validation pass)..."
+                set +e
+                aiperf profile \
+                  --model qwen2.5-7b \
+                  --tokenizer Qwen/Qwen2.5-7B-Instruct \
+                  --url http://vllm.llm-serving.svc.cluster.local:8000 \
+                  --endpoint-type chat \
+                  --streaming \
+                  --public-dataset sharegpt \
+                  --concurrency 1 \
+                  --request-count 1 \
+                  --ui simple \
+                  --output-artifact-dir /tmp/sharegpt-prep
+                set -e
+                if [ ! -f /tmp/sharegpt-prep/inputs.json ]; then
+                  echo "ERROR: prep run did not produce inputs.json — see log above" >&2
+                  exit 1
+                fi
+                mkdir -p /benchmarks/sharegpt-cache
+                cp /tmp/sharegpt-prep/inputs.json "$CACHE_FILE"
+              else
+                echo "Reusing cached ShareGPT inputs.json from $CACHE_FILE (skips dataset validation)."
+              fi
+
+              # HISTORY (from 2-larger-model-g7e, this study's source): that study hit
+              # a stale-shared-dataset-cache bug on this same PVC
+              # (/benchmarks/sharegpt-cache/inputs.json, shared across ALL studies in
+              # this repo's namespace/PVC-naming convention) more than once, whenever
+              # the cached prompts' baked-in "model" field didn't match whatever model
+              # was actually being served. Same model here (Qwen2.5-7B-Instruct,
+              # served-model-name qwen2.5-7b) as 2-larger-model-g7e's own final config
+              # and 1-goodput-realistic-load — check the cache file's "model" field
+              # before trusting the first real run if this study's own experiments
+              # start 404ing (see those studies' README "Prerequisites still open" for
+              # the exact symptom/fix).
+              #
+              # EXTENDED 2026-09-04 (explicit user decision): 24 levels instead of
+              # 2-larger-model-g7e's 12 — same log-spacing method, same starting point
+              # (150), reaching 2048 instead of 1024 (double), to properly exercise the
+              # preset step's max_num_seqs=2048 (see akamas/4-Goodput-Extended.yaml).
+              # Computed via geometric spacing: ratio = (2048/150)^(1/23) ≈ 1.1203,
+              # rounded to integers, endpoints forced to exactly 150 and 2048.
+              CONCURRENCY_LIST="150,168,188,211,236,265,297,332,372,417,467,524,587,657,736,825,924,1036,1160,1300,1456,1632,1828,2048"
+
+              aiperf profile \
+                --model qwen2.5-7b \
+                --tokenizer Qwen/Qwen2.5-7B-Instruct \
+                --url http://vllm.llm-serving.svc.cluster.local:8000 \
+                --endpoint-type chat \
+                --streaming \
+                --input-file "$CACHE_FILE" \
+                --custom-dataset-type inputs_json \
+                --concurrency "$CONCURRENCY_LIST" \
+                --benchmark-duration 300 \
+                --goodput "time_to_first_token:1500 inter_token_latency:300" \
+                --ui simple \
+                --output-artifact-dir "/benchmarks/aiperf-$(date +%s)"
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+                  optional: true   # only needed for gated models, see 03-hf-secret.yaml
+            # Added 2026-08-24: after the shared sharegpt-cache/inputs.json was
+            # cleared (stale-model-name incident, see CONCURRENCY_LIST comment
+            # above), the one-time full-dataset validation/construction pass (no
+            # cache to reuse) exceeded AIPerf's own internal default (300s),
+            # failing with "TimeoutError: timed out waiting for dataset
+            # configuration after 300.0s". Raised to 900s (15min) — comfortable
+            # margin over the observed near-miss. Only matters for a cold cache;
+            # a no-op once inputs.json exists again.
+            - name: AIPERF_DATASET_CONFIGURATION_TIMEOUT
+              value: "900"
+            # Added 2026-08-24, same day: AIPerf itself failed immediately on
+            # startup ("AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT: 600.0 must be
+            # greater than or equal to AIPERF_DATASET_CONFIGURATION_TIMEOUT:
+            # 900.0") — this env var isn't a CLI flag (doesn't show up in `aiperf
+            # profile --help`), it's an internal validation constraint between the
+            # two, defaulting to 600s. Raised above 900 with margin so it stays
+            # valid even if AIPERF_DATASET_CONFIGURATION_TIMEOUT is ever raised
+            # again.
+            - name: AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT
+              value: "1200"
+          # 2-larger-model-g7e bumped this 4Gi/8Gi -> 6Gi/12Gi (2026-08-23) after being
+          # OOMKilled tracking ~485k mostly-failed request records from a degenerate
+          # case (every request 404ing due to a stale dataset cache — see this study's
+          # own comment above). Left at 8Gi/13Gi here (a modest bump, not doubled)
+          # for this study's extended 24-level/2048-concurrency sweep — the node
+          # (system, m6i.xlarge) has only ~14.36GiB allocatable total, with other pods
+          # (Prometheus, Grafana) already running on it, so there's no room to double
+          # to 24Gi; 13Gi is close to the practical ceiling already. If this OOMs
+          # again, the fix is investigating the actual cause (same as the g7e
+          # incident) rather than just raising the limit further.
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"
+            limits:
+              memory: "13Gi"
+          volumeMounts:
+            - name: results
+              mountPath: /benchmarks
+            - name: hf-cache
+              mountPath: /root/.cache/huggingface
+
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: aiperf-results
+        - name: hf-cache
+          persistentVolumeClaim:
+            claimName: hf-cache
