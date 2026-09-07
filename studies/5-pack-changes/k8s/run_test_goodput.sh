@@ -1,0 +1,28 @@
+#!/bin/bash
+
+BENCH_FILE=/work/vllm-benchmark/studies/5-pack-changes/k8s/05-job.yaml
+
+# No ConfigMap to apply separately — the load pattern is just CLI flags on the Job's
+# own command, so re-applying the Job manifest each run is enough for a manual edit
+# to 05-job.yaml (e.g. a recalibrated concurrency list) to take effect on the next trial.
+kubectl delete -f "$BENCH_FILE" ; kubectl apply -f "$BENCH_FILE"
+
+# Same rationale as apply_config.sh's vLLM log dump: don't exit immediately on a failed
+# wait — print the job's own container logs first, so they land in this task's stdout
+# and show up in the Akamas UI without needing separate kubectl access.
+#
+# --timeout=1800s (30m), lowered from 3-comparison-a10's 5700s (95m, sized for its
+# 12-level sweep): this study runs a single flat 300s (5min) level, not a sweep, so
+# worst case is ~900s (15min) one-time dataset-prep on a cold cache + 300s (5min) the
+# one level + ~10min buffer for pip-install/misc overhead — comfortably under 30m.
+set +e
+kubectl wait --for=condition=complete job/aiperf-benchmark -n llm-benchmark --timeout=1800s
+WAIT_EXIT=$?
+set -e
+
+echo "--- wait-for-vllm init container logs ---"
+kubectl logs job/aiperf-benchmark -n llm-benchmark -c wait-for-vllm --tail=200 || true
+echo "--- aiperf container logs ---"
+kubectl logs job/aiperf-benchmark -n llm-benchmark -c aiperf --tail=500 || true
+
+exit $WAIT_EXIT

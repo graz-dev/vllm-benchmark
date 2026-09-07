@@ -1,0 +1,4 @@
+kind: system
+
+name: vLLM_Benchmark_5_Pack_Changes
+description: Pack-verification study for 5-pack-changes (Qwen/Qwen2.5-7B-Instruct on a single NVIDIA A10G / g5.2xlarge — cloned from 3-comparison-a10, same stack — verifies the new GPU/DCGM metrics and Kubernetes/PSI metrics land correctly, see study README — vLLM optimization pack 1.6.0, GPU optimization pack 1.1.0, Kubernetes optimization pack 1.8.0-dev — TODO, re-verify all three installed pack versions before creating this system, see study README "Prerequisites still open")
