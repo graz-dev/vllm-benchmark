@@ -1,0 +1,4 @@
+kind: system
+
+name: vLLM_Benchmark_7_Tensor_Parallelism
+description: Goodput study for 7-tensor-parallelism (Qwen/Qwen2.5-7B-Instruct on 1x g6.12xlarge, 4x NVIDIA L4 24GB — goal/constraints/windowing/parametersSelection/baseline/experiment-count identical to 2-larger-model-g7e, no parameterConstraints, first study on this GPU generation, see study README — vLLM optimization pack 1.6.1, GPU optimization pack 1.1.0, Kubernetes optimization pack 1.8.0-dev — TODO, re-verify all three installed pack versions before creating this system, see study README "Prerequisites still open")
