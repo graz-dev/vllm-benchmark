@@ -1,0 +1,220 @@
+kind: study
+
+name: 6-Data-Parallelism
+system: vLLM_Benchmark_6_Data_Parallelism
+workflow: 6-Data-Parallelism-Workflow
+
+goal:
+  objective: maximize
+  function:
+    formula: vLLM.prefill_token_throughput + vLLM.decode_token_throughput
+  constraints:
+    absolute:
+      # Same as 2-larger-model-g7e (explicit request, 2026-09-07: goal/constraints/
+      # windowing/parametersSelection/baseline/experiment count all match that study).
+      - name: TTFT P95 interactive-chat SLA
+        formula: vLLM.time_to_first_token_p95 <= 1500
+      - name: ITL P95 interactive-chat SLA
+        formula: vLLM.inter_token_latency_p95 <= 300
+
+windowing:
+  # Same as 2-larger-model-g7e — this study runs the same 12-level, 300s/level
+  # concurrency ramp (see k8s/05-job.yaml), not the flat single-level load
+  # 5-pack-changes used, so a stability window (not a trim) is the right fit again.
+  type: stability
+  stability:
+    metric: vLLM.prefill_token_throughput
+    width: 6
+    maxStdDev: 300000000
+    when:
+      metric: vLLM.prefill_token_throughput
+      is: max
+
+# NO parametersSelection / parameterConstraints in this study — explicit design
+# decision (2026-09-07): unlike 2-larger-model-g7e, this study runs exactly 4
+# fixed-configuration trials (baseline + 3 presets below), no optimize step. Every
+# tuned parameter except vLLM.data_parallel_size stays at whatever the baseline step's
+# doNotRenderParameters leaves it at (vLLM's own real default) across all 4 steps —
+# this study varies ONLY data_parallel_size (1/2/3/4) and holds everything else fixed,
+# so there's nothing for an optimizer to search and no domain for it to violate.
+
+steps:
+  - name: baseline
+    type: baseline
+    numberOfTrials: 1
+    # NOW MATCHES 1-goodput-realistic-load's baseline design (corrected 2026-08-21 —
+    # this step previously pinned all 25 other parameters explicitly via `values`
+    # instead; see git history / study README for that superseded design and why it
+    # changed: a manual smoke-test deploy against the real vllm/vllm-openai:latest
+    # image crashed with "unrecognized arguments: --max-num-partial-prefills=1
+    # --max-long-partial-prefills=1" — those two CLI flags no longer exist on this
+    # vLLM build, proving pinned-defaultValue rendering is not safe to assume stable
+    # across vLLM versions the way this study already treats attention_backend/
+    # kv_cache_dtype compatibility).
+    #
+    # doNotRenderParameters below lists every vLLM.* parameter EXCEPT
+    # gpu_memory_utilization — all 13 other tuned parameters plus all 12 pinned
+    # parameters referenced by k8s/01-deployment_template.yaml. Every excluded
+    # parameter is left unrendered, so vLLM applies its own real defaults for all of
+    # them — this is deliberately vLLM's standard, most-tested startup path, and it
+    # sidesteps flag-name drift like the partial-prefills incident above: a flag that
+    # no longer exists simply never gets rendered onto the command line at baseline.
+    #
+    # gpu_memory_utilization still needs the explicit `values:` pin (not just "leave
+    # it un-excluded and let it render at its pack default") because the pack's own
+    # defaultValue for it is 0.92, not the 0.90 this study's baseline wants.
+    #
+    # HISTORY (superseded 2026-08-27): while this study targeted Qwen/Qwen3.8-27B (a
+    # HYBRID Mamba/attention architecture, GDN — Gated DeltaNet), a second incident
+    # required also pinning vLLM.max_num_seqs: 256 — left unrendered, vLLM's own
+    # auto-selected default (1024) exceeded that model's fixed-size Mamba cache-block
+    # budget ("ValueError: max_num_seqs (1024) exceeds available Mamba cache blocks
+    # (603)"), a constraint distinct from and additional to the standard KV-cache
+    # budget gpu_memory_utilization controls. That pin is REMOVED now that the model
+    # is back to Qwen2.5-7B-Instruct (see README "Model swap") — a pure-transformer,
+    # non-MoE shape for which "every other parameter at vLLM's own stock default is
+    # safe" (1-goodput-realistic-load's original premise) holds again, so
+    # vLLM.max_num_seqs is back in doNotRenderParameters below like every other tuned
+    # parameter. Both original incidents remain documented in the study README's own
+    # "Incidents" section for the record.
+    #
+    # The workflow's FileConfigurator task sets ignoreUnsubstitutedTokens: true so it
+    # doesn't fail on the resulting unsubstituted ${vLLM.*} tokens; apply_config.sh's
+    # Step 2 then strips those literal unsubstituted lines from the rendered file
+    # before it's applied.
+    values:
+      vLLM.gpu_memory_utilization: 0.90
+    doNotRenderParameters:
+      - vLLM.max_num_seqs
+      - vLLM.max_num_batched_tokens
+      - vLLM.kv_cache_dtype
+      - vLLM.performance_mode
+      - vLLM.optimization_level
+      - vLLM.block_size
+      - vLLM.attention_backend
+      - vLLM.enforce_eager
+      - vLLM.scheduling_policy
+      - vLLM.disable_cascade_attn
+      - vLLM.tokenizer_mode
+      - vLLM.async_scheduling
+      - vLLM.max_cudagraph_capture_size
+      - vLLM.tensor_parallel_size
+      - vLLM.pipeline_parallel_size
+      - vLLM.data_parallel_size
+      - vLLM.enable_expert_parallel
+      - vLLM.disable_custom_all_reduce
+      - vLLM.dtype
+      - vLLM.decode_context_parallel_size
+      - vLLM.prefill_context_parallel_size
+      - vLLM.max_num_partial_prefills
+      - vLLM.max_long_partial_prefills
+      - vLLM.long_prefill_token_threshold
+      - vLLM.max_model_len
+
+  # The 3 preset steps below are IDENTICAL to the baseline step above — same
+  # `values`/`doNotRenderParameters` shape — except `vLLM.data_parallel_size` moves
+  # from doNotRenderParameters into `values` with an explicit integer, so it actually
+  # renders onto the vLLM command line (k8s/01-deployment_template.yaml already has
+  # `--data-parallel-size=${vLLM.data_parallel_size}` unconditionally in its args list
+  # — see "Pinned" section — so no template change was needed for this). Every other
+  # parameter — all 13 other tuned parameters and all 12 pinned parameters — stays
+  # unrendered exactly as at baseline, so this isolates data_parallel_size as the only
+  # variable across all 4 steps.
+  - name: preset_dp2
+    type: preset
+    numberOfTrials: 1
+    values:
+      vLLM.gpu_memory_utilization: 0.90
+      vLLM.data_parallel_size: 2
+    doNotRenderParameters:
+      - vLLM.max_num_seqs
+      - vLLM.max_num_batched_tokens
+      - vLLM.kv_cache_dtype
+      - vLLM.performance_mode
+      - vLLM.optimization_level
+      - vLLM.block_size
+      - vLLM.attention_backend
+      - vLLM.enforce_eager
+      - vLLM.scheduling_policy
+      - vLLM.disable_cascade_attn
+      - vLLM.tokenizer_mode
+      - vLLM.async_scheduling
+      - vLLM.max_cudagraph_capture_size
+      - vLLM.tensor_parallel_size
+      - vLLM.pipeline_parallel_size
+      - vLLM.enable_expert_parallel
+      - vLLM.disable_custom_all_reduce
+      - vLLM.dtype
+      - vLLM.decode_context_parallel_size
+      - vLLM.prefill_context_parallel_size
+      - vLLM.max_num_partial_prefills
+      - vLLM.max_long_partial_prefills
+      - vLLM.long_prefill_token_threshold
+      - vLLM.max_model_len
+
+  - name: preset_dp3
+    type: preset
+    numberOfTrials: 1
+    values:
+      vLLM.gpu_memory_utilization: 0.90
+      vLLM.data_parallel_size: 3
+    doNotRenderParameters:
+      - vLLM.max_num_seqs
+      - vLLM.max_num_batched_tokens
+      - vLLM.kv_cache_dtype
+      - vLLM.performance_mode
+      - vLLM.optimization_level
+      - vLLM.block_size
+      - vLLM.attention_backend
+      - vLLM.enforce_eager
+      - vLLM.scheduling_policy
+      - vLLM.disable_cascade_attn
+      - vLLM.tokenizer_mode
+      - vLLM.async_scheduling
+      - vLLM.max_cudagraph_capture_size
+      - vLLM.tensor_parallel_size
+      - vLLM.pipeline_parallel_size
+      - vLLM.enable_expert_parallel
+      - vLLM.disable_custom_all_reduce
+      - vLLM.dtype
+      - vLLM.decode_context_parallel_size
+      - vLLM.prefill_context_parallel_size
+      - vLLM.max_num_partial_prefills
+      - vLLM.max_long_partial_prefills
+      - vLLM.long_prefill_token_threshold
+      - vLLM.max_model_len
+
+  - name: preset_dp4
+    type: preset
+    numberOfTrials: 1
+    values:
+      vLLM.gpu_memory_utilization: 0.90
+      vLLM.data_parallel_size: 4
+    doNotRenderParameters:
+      - vLLM.max_num_seqs
+      - vLLM.max_num_batched_tokens
+      - vLLM.kv_cache_dtype
+      - vLLM.performance_mode
+      - vLLM.optimization_level
+      - vLLM.block_size
+      - vLLM.attention_backend
+      - vLLM.enforce_eager
+      - vLLM.scheduling_policy
+      - vLLM.disable_cascade_attn
+      - vLLM.tokenizer_mode
+      - vLLM.async_scheduling
+      - vLLM.max_cudagraph_capture_size
+      - vLLM.tensor_parallel_size
+      - vLLM.pipeline_parallel_size
+      - vLLM.enable_expert_parallel
+      - vLLM.disable_custom_all_reduce
+      - vLLM.dtype
+      - vLLM.decode_context_parallel_size
+      - vLLM.prefill_context_parallel_size
+      - vLLM.max_num_partial_prefills
+      - vLLM.max_long_partial_prefills
+      - vLLM.long_prefill_token_threshold
+      - vLLM.max_model_len
+
+# No optimize step — explicit user decision (2026-09-07). This study only ever runs
+# the 4 fixed configurations above (baseline = data_parallel_size 1, then 2/3/4).
