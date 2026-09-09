@@ -122,14 +122,19 @@ regressed — not automated by anything in this repo, a deliberate manual step.
   the AWS Console since it's already `ACTIVE`) — verify `nvidia.com/gpu: 4` shows up
   as allocatable before trusting anything downstream.
 - Install `dcgm-exporter-l4` (see `k8s/monitoring/dcgm-exporter-values.yaml`).
-- **(2026-09-08) kv-cache-exporter sidecar**: `kubectl apply -f` the new
-  `k8s/04-kv-cache-exporter-configmap.yaml`, then re-apply `k8s/02-service.yaml` (new
-  port 9400) and `k8s/monitoring/servicemonitor.yaml` (new endpoint). Without the
-  ConfigMap the vLLM pod stays in `ContainerCreating` until `apply_config.sh`'s rollout
-  timeout. See "Absolute KV-cache metrics" below.
-- **(2026-09-08) vLLM pack 1.7.0**: build + install it from the local pack clone
-  (branch `feature/kv-cache-absolute-metrics`, uncommitted) before creating the
-  telemetry instance — `akamas/README.md` "Setup & run", step 0.
+- **(2026-09-08) kv-cache-exporter sidecar — DONE**: `k8s/04-kv-cache-exporter-configmap.yaml`
+  applied (ConfigMap `kv-cache-exporter`, namespace `llm-serving`), `k8s/02-service.yaml`
+  re-applied (Service `vllm` now exposes `http:8000` + `kv-exporter:9400`) and
+  `k8s/monitoring/servicemonitor.yaml` re-applied (ServiceMonitor `vllm` now has both
+  endpoints). Without the ConfigMap the vLLM pod would stay in `ContainerCreating` until
+  `apply_config.sh`'s rollout timeout. The sidecar itself only lands in the pod once the
+  workflow re-applies the rendered Deployment. See "Absolute KV-cache metrics" below.
+- **(2026-09-08) vLLM pack 1.7.0 — DONE**: built + installed on `akamas.lab.akamas.io`
+  from the `toolbox` pod (source copied to `/work/vllm-170`), and the telemetry instance
+  `Prometheus_7_Tensor_Parallelism` created — see `akamas/README.md` "Setup & run",
+  step 0. The instance was the *only* resource `akamas create -f .../akamas` had failed
+  to create against pack 1.6.1, which is why the first `Start` returned "No valid
+  telemetry instance found for this study".
 - Confirm the `vllm-model-cache` PVC lands in the same AZ as wherever `llm-serving-l4`
   schedules — the recurring AZ-mismatch pattern this repo has hit repeatedly.
 - Supply `akamas/id_rsa` (excluded from this scaffold, same convention as every other

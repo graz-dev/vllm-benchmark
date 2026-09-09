@@ -1,0 +1,4 @@
+kind: system
+
+name: vLLM_Benchmark_8_Parallelism_Tuning
+description: Goodput study for 8-parallelism-tuning (Qwen/Qwen2.5-7B-Instruct on 1x g6.12xlarge, 4x NVIDIA L4 24GB). Same goal/constraints/windowing/baseline as 2-larger-model-g7e and the same 9 components / 102-metric telemetry as 7-tensor-parallelism, but the optimizer searches 16 parameters — that study's 14 plus tensor_parallel_size and data_parallel_size in [1,4], constrained to TP x DP <= 4 and TP != 3 — instead of running fixed presets. vLLM optimization pack 1.7.0, GPU optimization pack 1.1.0, Kubernetes optimization pack 1.8.0-dev (all three verified installed on akamas.lab.akamas.io 2026-09-08).

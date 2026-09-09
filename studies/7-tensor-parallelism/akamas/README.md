@@ -15,7 +15,7 @@ ones, delete and recreate the telemetry instance — see "Setup & run".
 **Also 2026-09-08 (later the same day):** 4 **absolute KV-cache metrics**
 (`kv_cache_capacity_tokens`, `kv_cache_used_tokens`, `kv_cache_capacity_gb`,
 `kv_cache_used_gb` — vLLM pack **1.6.1 → 1.7.0**, branch
-`feature/kv-cache-absolute-metrics`, not yet built/installed) added to
+`feature/kv-cache-absolute-metrics`, built + installed 2026-09-08) added to
 `telemetry/prometheus.yaml` (98 → 102 metrics). They need a new `kv-cache-exporter`
 sidecar in the vLLM pod (`k8s/04-kv-cache-exporter-configmap.yaml`,
 `k8s/01-deployment_template.yaml`, `k8s/02-service.yaml`, `k8s/monitoring/
@@ -38,9 +38,14 @@ this study's own node group) are carried over, just re-pointed to `llm-serving-l
   `feature/kv-cache-absolute-metrics`, uncommitted in the local pack clone as of that
   date — 4 new metrics `kv_cache_capacity_tokens`/`kv_cache_used_tokens`/
   `kv_cache_capacity_gb`/`kv_cache_used_gb`; 1.6.1 was `feature/mfu-compute-bandwidth-
-  metrics`, 2026-09-07). **TODO: build + install, then re-verify**: `akamas describe
-  optimization-pack vLLM` must show 1.7.0 or the 4 KV-cache entries in
-  `telemetry/prometheus.yaml` won't resolve.
+  metrics`, 2026-09-07). **Built + installed 2026-09-08** on the `akamas.lab.akamas.io`
+  instance (Akamas platform 3.7.1) from the `toolbox` pod — the pack source was copied
+  to `/work/vllm-170` there because the pod's own clone `/work/vllm` sits at 1.6.1;
+  `akamas describe optimization-pack vLLM` now reports 1.7.0 and all 4 KV-cache
+  metrics. Verified: `akamas create telemetry-instance` had failed with *"The following
+  metric(s) are not present in System ...: kv_cache_capacity_tokens,
+  kv_cache_used_tokens, kv_cache_capacity_gb, kv_cache_used_gb"* against 1.6.1, and
+  succeeds after the upgrade.
 - **GPU optimization pack**: **1.1.0** (`feature/dcgm-counters-coverage`) — **TODO,
   re-verify**: `akamas describe optimization-pack GPU`.
 - **Kubernetes optimization pack**: **1.8.0-dev** (`feature/psi-cluster-metrics`) —
