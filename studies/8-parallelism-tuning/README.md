@@ -105,6 +105,24 @@ infra) with the folder/resource names changed to `8-parallelism-tuning` /
   the baseline and the first few trials' `num_requests_waiting` before trusting a
   1000-experiment budget.
 - **SLA thresholds inherited**, not derived from L4 data (see `goal.constraints`).
+- **AZ mismatch between the GPU node and the model-cache volume — hit on the very first
+  run (2026-09-09).** The `llm-serving-l4` node group spans 3 subnets/AZs (no
+  `availabilityZones` in `infra/eks/cluster.yaml`), so every scale-from-zero can land the
+  single `g6.12xlarge` in a different AZ — this morning the ASG failed for 13 minutes
+  with `InsufficientInstanceCapacity`, then launched in `us-east-2c`, while the EBS-backed
+  `vllm-model-cache` PV (created when the pod first ran in `us-east-2a`) is AZ-bound.
+  Symptom: pod `Pending` with `1 node(s) didn't match PersistentVolume's node affinity`,
+  `apply_config.sh`'s 1500 s rollout wait expires, trial fails after ~25 min (this
+  study's first baseline, experiment 1). Not a GPU problem — the node exposes
+  `nvidia.com/gpu: 4` — and not a study-config problem (the rendered baseline was
+  correct). **Fix applied**: scale `vllm` to 0, delete the PVC (`gp3-ephemeral` is
+  `WaitForFirstConsumer` + `reclaimPolicy: Delete`), re-apply
+  `k8s/01-pvc-model-cache.yaml`, scale back to 1 → new PV bound in the node's AZ, model
+  re-downloaded once (public HF model, no token needed). **Will recur** on any later
+  scale-to-zero that lands elsewhere — structural options (not done): automate the
+  AZ check + PVC recreation in `apply_config.sh`; pin the node group to one AZ (needs a
+  new node group, and trades against `g6` capacity scarcity); or a multi-AZ (EFS)
+  cache volume.
 - **`preset`-free by design**: TP=3 and TP×DP>4 are excluded up front; any other
   startup failure (e.g. an attention-backend/`kv_cache_dtype` combination not covered by
   the 3 carried constraints) surfaces as a failed experiment — `maxFailedExperiments:

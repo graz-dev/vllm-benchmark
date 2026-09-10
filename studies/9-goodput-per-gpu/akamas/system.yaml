@@ -1,0 +1,4 @@
+kind: system
+
+name: vLLM_Benchmark_9_Goodput_Per_GPU
+description: Goodput-per-GPU study for 9-goodput-per-gpu (Qwen/Qwen2.5-7B-Instruct on 1x g6.12xlarge, 4x NVIDIA L4 24GB). Identical to 8-parallelism-tuning — same 16 tuned parameters incl. tensor/data_parallel_size in [1,4] with TP x DP <= 4 and TP != 3, same 9 components and telemetry — except the goal, which divides goodput by vLLM.active_gpus (GPUs actually holding weights, from DCGM). vLLM optimization pack 1.8.0 (adds active_gpus, active_dp_engines), GPU optimization pack 1.2.0 (adds 3 NVLink counters), Kubernetes optimization pack 1.8.0-dev.

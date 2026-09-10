@@ -20,7 +20,7 @@
 #
 # ONE-TIME APPLY (before the first trial — a missing ConfigMap leaves the vLLM pod stuck
 # in ContainerCreating until apply_config.sh's rollout timeout):
-#   kubectl apply -f studies/8-parallelism-tuning/k8s/04-kv-cache-exporter-configmap.yaml
+#   kubectl apply -f studies/9-goodput-per-gpu/k8s/04-kv-cache-exporter-configmap.yaml
 # Verify once the pod is up:
 #   kubectl -n llm-serving exec deploy/vllm -c kv-cache-exporter -- python3 -c \
 #     "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:9400/metrics').read().decode())"

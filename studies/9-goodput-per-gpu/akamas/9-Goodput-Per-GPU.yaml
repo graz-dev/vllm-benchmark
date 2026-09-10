@@ -1,0 +1,187 @@
+kind: study
+
+name: 9-Goodput-Per-GPU
+system: vLLM_Benchmark_9_Goodput_Per_GPU
+workflow: 9-Goodput-Per-GPU-Workflow
+
+goal:
+  objective: maximize
+  # CHANGED vs 8-parallelism-tuning (the only study-level difference): goodput is
+  # divided by the number of GPUs the configuration actually occupies, so the optimizer
+  # is rewarded for tokens/s PER GPU, not for grabbing all four L4s. vLLM.active_gpus is
+  # a new vLLM-pack 1.8.0 metric read from DCGM (GPUs with > 1 GiB framebuffer in use,
+  # see telemetry/prometheus.yaml): 1 at baseline (TP1/DP1), TP x DP otherwise. It is
+  # constant within a trial, so the division does not change the windowing.
+  # vLLM.active_dp_engines (same pack version) is collected alongside for analysis —
+  # TP = active_gpus / active_dp_engines — but is not part of the goal: with TP=4/DP=1
+  # it would read 1 and hide the 4 GPUs in use.
+  function:
+    formula: (vLLM.prefill_token_throughput + vLLM.decode_token_throughput) / vLLM.active_gpus
+  constraints:
+    absolute:
+      # Same as 2-larger-model-g7e and 7-tensor-parallelism — the interactive-chat SLA
+      # pair carried forward from 1-goodput-realistic-load, NOT derived from this
+      # hardware's own data (no L4 study has completed yet). Recalibrate once the
+      # baseline + first trials report real TTFT/ITL numbers for Qwen2.5-7B on L4.
+      - name: TTFT P95 interactive-chat SLA
+        formula: vLLM.time_to_first_token_p95 <= 1500
+      - name: ITL P95 interactive-chat SLA
+        formula: vLLM.inter_token_latency_p95 <= 300
+
+windowing:
+  # Same as 2-larger-model-g7e — this study runs the same 12-level, 300s/level
+  # concurrency ramp (k8s/05-job.yaml), so a stability window (not a trim) is the fit.
+  # width=6 matches 1-goodput-realistic-load's precedent for this sweep shape.
+  type: stability
+  stability:
+    metric: vLLM.prefill_token_throughput
+    width: 6
+    maxStdDev: 300000000
+    when:
+      metric: vLLM.prefill_token_throughput
+      is: max
+
+parametersSelection:
+  # The same 14 as 2-larger-model-g7e (themselves 1-goodput-realistic-load's — see that
+  # study's README for the per-parameter rationale, largely hardware/model-independent).
+  # Every domain/categories below was re-checked 2026-09-09 as a subset of what the
+  # installed vLLM pack 1.7.0 declares on the vLLM component type.
+  - name: vLLM.gpu_memory_utilization
+    domain: [0.85, 0.95]
+  - name: vLLM.max_num_seqs
+    domain: [16, 1024]
+  - name: vLLM.max_num_batched_tokens
+    domain: [256, 8192]
+  - name: vLLM.kv_cache_dtype
+    categories: [auto, fp8, fp8_e4m3, fp8_e5m2]
+  - name: vLLM.performance_mode
+    categories: [balanced, interactivity, throughput]
+  - name: vLLM.optimization_level
+    domain: [0, 3]
+  - name: vLLM.enforce_eager
+    categories: ["true", "false"]
+  - name: vLLM.scheduling_policy
+    categories: [fcfs, priority]
+  - name: vLLM.disable_cascade_attn
+    categories: ["true", "false"]
+  - name: vLLM.tokenizer_mode
+    categories: [auto, hf, slow]
+  - name: vLLM.async_scheduling
+    categories: ["true", "false"]
+  - name: vLLM.max_cudagraph_capture_size
+    domain: [1, 1024]
+  - name: vLLM.block_size
+    categories: ["16", "32", "48", "64", "80", "96", "112", "128"]
+  - name: vLLM.attention_backend
+    categories: [FLASH_ATTN, FLASHINFER, TRITON_ATTN]
+
+  # NEW in this study (2026-09-09) — the 4-GPU topology is searched, not preset. This is
+  # ROADMAP.md H5's second angle ("given N total GPUs, which TP/replica split wins")
+  # tested directly: 7-tensor-parallelism ran DP 1..4 and TP 2/4 as fixed presets with
+  # everything else at vLLM defaults; here the optimizer co-tunes the split with the 14
+  # per-instance parameters above (H6: TP frees per-GPU KV headroom that lets
+  # max_num_seqs run higher — only visible when both are searched together).
+  # Pack 1.7.0 declares both as integer — tensor_parallel_size [1,16], data_parallel_size
+  # [1,8]; [1,4] is what one g6.12xlarge (4x L4) can physically host. Only 7 of the 16
+  # (TP, DP) pairs are valid — see the two topology parameterConstraints below.
+  - name: vLLM.tensor_parallel_size
+    domain: [1, 4]
+  - name: vLLM.data_parallel_size
+    domain: [1, 4]
+
+# vLLM.spec_method / vLLM.spec_tokens / vLLM.prefix_caching_hash_algo /
+# vLLM.compilation_mode are deliberately absent from parametersSelection AND from every
+# step's `values` — same as 2-larger-model-g7e; none is referenced by
+# k8s/01-deployment_template.yaml, so none ever renders for this study.
+#
+# The 6 parameterConstraints 1-goodput-realistic-load carried are NOT re-added here
+# either (same decision 2-larger-model-g7e took 2026-08-27): 3 of them were root-caused
+# on Ampere/A10G only, and this is a third GPU generation (Ada Lovelace/SM89). Only the
+# constraints below — vLLM-wide validation rules and physical topology limits — apply.
+
+parameterConstraints:
+  # --- Carried over from 2-larger-model-g7e: vLLM's own CUDA-platform validation and a
+  #     query-quant assert in v0.22.0, confirmed in source there — hardware-independent,
+  #     so they hold on L4 exactly as on Blackwell. See that study's manifest for the
+  #     full incident record (experiments 3, 8, 26). ---
+  - name: FLASH_ATTN only supports auto kv_cache_dtype
+    formula: vLLM.attention_backend != "FLASH_ATTN" || vLLM.kv_cache_dtype == "auto"
+  - name: TRITON_ATTN does not support fp8_e5m2 kv_cache_dtype (query-quant bug)
+    formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e5m2"
+  - name: FLASHINFER does not support fp8_e5m2 kv_cache_dtype (query-quant bug)
+    formula: vLLM.attention_backend != "FLASHINFER" || vLLM.kv_cache_dtype != "fp8_e5m2"
+
+  # --- NEW: topology must fit the node. Without these two, 9 of the 16 (TP, DP) pairs
+  #     crash vLLM at startup and burn the 75m "Apply config" timeout each. ---
+  #
+  # vLLM needs tensor_parallel_size x data_parallel_size GPUs; the pod requests exactly
+  # nvidia.com/gpu: "4" (k8s/01-deployment_template.yaml), all the node has.
+  - name: TP x DP must fit the 4 L4s the pod requests
+    formula: vLLM.tensor_parallel_size * vLLM.data_parallel_size <= 4
+  # vLLM requires TP to divide the model's attention heads (and KV heads).
+  # Qwen/Qwen2.5-7B-Instruct: num_attention_heads 28, num_key_value_heads 4 (read from
+  # the model's config.json on the cluster, 2026-09-08) — 3 divides neither, so TP=3
+  # is a guaranteed startup failure. DP=3 (three TP=1 replicas) is legitimate.
+  # Valid pairs left: (1,1) (1,2) (1,3) (1,4) (2,1) (2,2) (4,1).
+  - name: TP must divide Qwen2.5-7B-Instruct's 28 attention heads / 4 KV heads
+    formula: vLLM.tensor_parallel_size != 3
+
+steps:
+  - name: baseline
+    type: baseline
+    numberOfTrials: 1
+    # Same baseline design as 2-larger-model-g7e / 7-tensor-parallelism (1-goodput-
+    # realistic-load's original premise): every vLLM.* parameter EXCEPT
+    # gpu_memory_utilization is left UNRENDERED, so vLLM applies its own real defaults —
+    # its standard, most-tested startup path. This also sidesteps CLI flag-name drift
+    # (2-larger-model-g7e's "unrecognized arguments: --max-num-partial-prefills"
+    # incident): a flag that no longer exists never reaches the command line at baseline.
+    #
+    # doNotRenderParameters lists all 15 other TUNED parameters — including the two new
+    # ones, so baseline = tensor_parallel_size 1 / data_parallel_size 1 (vLLM's defaults:
+    # one replica on one of the four GPUs, the other three idle; DCGM per-GPU metrics
+    # on gpu1..gpu3 will show that) — plus the 10 pinned parameters that
+    # k8s/01-deployment_template.yaml also references.
+    #
+    # gpu_memory_utilization needs the explicit `values:` pin because the pack's own
+    # defaultValue is 0.92, not the 0.90 every study in this repo baselines at.
+    #
+    # The workflow's FileConfigurator sets ignoreUnsubstitutedTokens: true so the
+    # unrendered ${vLLM.*} tokens don't fail the task; apply_config.sh's Step 2 then
+    # strips those literal unsubstituted lines before the manifest is applied.
+    values:
+      vLLM.gpu_memory_utilization: 0.90
+    doNotRenderParameters:
+      - vLLM.max_num_seqs
+      - vLLM.max_num_batched_tokens
+      - vLLM.kv_cache_dtype
+      - vLLM.performance_mode
+      - vLLM.optimization_level
+      - vLLM.block_size
+      - vLLM.attention_backend
+      - vLLM.enforce_eager
+      - vLLM.scheduling_policy
+      - vLLM.disable_cascade_attn
+      - vLLM.tokenizer_mode
+      - vLLM.async_scheduling
+      - vLLM.max_cudagraph_capture_size
+      - vLLM.tensor_parallel_size
+      - vLLM.pipeline_parallel_size
+      - vLLM.data_parallel_size
+      - vLLM.enable_expert_parallel
+      - vLLM.disable_custom_all_reduce
+      - vLLM.dtype
+      - vLLM.decode_context_parallel_size
+      - vLLM.prefill_context_parallel_size
+      - vLLM.max_num_partial_prefills
+      - vLLM.max_long_partial_prefills
+      - vLLM.long_prefill_token_threshold
+      - vLLM.max_model_len
+
+  # No doNotRenderParameters here on purpose: the optimizer renders all 16 tuned
+  # parameters every experiment; the 10 pinned-but-untuned template tokens stay
+  # unsubstituted and apply_config.sh strips them, exactly as at baseline.
+  - name: optimize
+    type: optimize
+    numberOfExperiments: 1000
+    maxFailedExperiments: 200
