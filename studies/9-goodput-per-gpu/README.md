@@ -125,18 +125,20 @@ the next section) — read that README for the full rationale:
   `TP × DP ≤ 4`, `TP ≠ 3` (28 attention heads / 4 KV heads) → 7 valid topologies;
 - `baseline`: `gpu_memory_utilization: 0.90` pinned, all else unrendered (TP1/DP1 →
   `active_gpus = 1`, so baseline score = raw goodput) — run once by the first instance
-  (`9-Goodput-Per-GPU`, experiment 1); the second instance imports it via `from`;
-- `bootstrap` (second instance only): imports experiments 2..N of the first instance,
-  trials and metrics included, failed ones too — nothing is re-run;
+  (`9-Goodput-Per-GPU`, experiment 1); the later instances import it via `from`;
+- `bootstrap` (later instances only): imports the first instance's FINISHED experiments
+  2..23 minus the ERROR ones (16, 17, 22), trials and metrics included — nothing is re-run;
 - `optimize`: 1000 experiments / 200 failures.
 
-**Two Akamas study instances, one manifest.** `9-Goodput-Per-GPU` (created 2026-09-10) ran
-without the `max_num_batched_tokens ≥ max_num_seqs` constraint and was stopped on
-2026-09-11 after experiments 16, 17 and 22 failed on it. `9-Goodput-Per-GPU-v2` — the
-current content of `akamas/9-Goodput-Per-GPU.yaml`, same system/workflow/goal/parameters —
-adds the constraint and continues from where the first stopped through the imported
-baseline and the `bootstrap` step (see "How to run"). The first instance must not be
-deleted: it is the bootstrap source.
+**Three Akamas study instances, one manifest.** `9-Goodput-Per-GPU` (created 2026-09-10)
+ran without the `max_num_batched_tokens ≥ max_num_seqs` constraint and was stopped on
+2026-09-11 after experiments 16, 17 and 22 failed on it (23 experiments in total).
+`9-Goodput-Per-GPU-v2` added the constraint and the import steps but bootstrapped the
+three ERROR experiments too, which crashes Akamas 3.7's bootstrap import — it never left
+the bootstrap step and was finished after 1 h 18 m (details in `akamas/README.md`,
+"The v2 incident"). `9-Goodput-Per-GPU-v3` — the current content of
+`akamas/9-Goodput-Per-GPU.yaml` — is v2 with the three ERROR experiments left out of the
+bootstrap list. Neither the first instance (the import source) nor v2 is deleted.
 
 ## Constraint added 2026-09-11: `max_num_batched_tokens ≥ max_num_seqs` (experiment 22)
 
@@ -167,9 +169,9 @@ space suggests.
 Re-added to `akamas/9-Goodput-Per-GPU.yaml` on 2026-09-11 as
 `vLLM.max_num_batched_tokens >= vLLM.max_num_seqs`. `parameterConstraints` cannot be
 updated on an existing study (Akamas 3.7.x: only `goal` can), so the first instance was
-stopped and the manifest was turned into a second instance, `9-Goodput-Per-GPU-v2`, that
-imports the first one's baseline and experiments instead of re-running them (see "Study
-design" and "How to run"). `8-parallelism-tuning` has the same gap.
+stopped and the manifest was turned into a new instance (`v2`, then `v3` — see "Study
+design") that imports the first one's baseline and experiments instead of re-running them.
+`8-parallelism-tuning` has the same gap.
 
 ## Stack & versions
 
@@ -237,26 +239,24 @@ akamas describe study "9-Goodput-Per-GPU"
 akamas start study "9-Goodput-Per-GPU"
 ```
 
-**Restart as `9-Goodput-Per-GPU-v2` (2026-09-11).** System, components, telemetry
+**Restart as `9-Goodput-Per-GPU-v3` (2026-09-11).** System, components, telemetry
 instance and workflow already exist and are reused — only the study is created:
 
 ```bash
-akamas finish study "9-Goodput-Per-GPU"                 # stop the first instance; do NOT delete it
-akamas list experiment "9-Goodput-Per-GPU"              # note the last experiment number
-# edit akamas/9-Goodput-Per-GPU.yaml: append every experiment > 22 to the bootstrap
-# step's `experiments` list (the list on disk stops at 22)
+akamas describe study "9-Goodput-Per-GPU"               # must be FINISHED (it is, 23 experiments)
 akamas create -f studies/9-goodput-per-gpu/akamas/9-Goodput-Per-GPU.yaml     # single file, NOT the folder: system/workflow already exist
-akamas describe study "9-Goodput-Per-GPU-v2"            # expect 6 parameterConstraints, 3 steps
-akamas start study "9-Goodput-Per-GPU-v2"
+akamas describe study "9-Goodput-Per-GPU-v3"            # expect 6 parameterConstraints, 3 steps
+akamas start study "9-Goodput-Per-GPU-v3"
+akamas list experiment "9-Goodput-Per-GPU-v3"           # within minutes: 1..20 imported, optimize RUNNING
 ```
 
 The baseline step's `from` and the `bootstrap` step import experiments — configuration,
-trials and metrics — without executing anything, so the second instance goes straight to
-its `optimize` step. The 3.7 docs do not specify how imported *failed* experiments are
-treated (whether they count toward `maxFailedExperiments`, or what happens to an imported
-configuration that violates the new constraint); they were imported anyway by explicit
-decision — the experiments still to run are what matters, and those three configurations
-are outside the feasible region now.
+trials and metrics — without executing anything, so the new instance goes straight to its
+`optimize` step. **The bootstrap list must contain only FINISHED experiments**: `v2`
+included the three ERROR experiments, and Akamas 3.7's campaign service crashes on a trial
+without a score (`NullPointerException` in `refreshNormalization`), while Airflow retries
+the step forever — the study looks stuck at 0 %. Full record in `akamas/README.md`, "The
+v2 incident".
 
 ## Results
 

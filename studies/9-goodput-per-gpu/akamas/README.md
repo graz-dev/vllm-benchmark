@@ -3,13 +3,15 @@
 **Created:** 2026-09-10 (everything copied from `8-parallelism-tuning`; the goal formula and
 two telemetry metrics are the only differences)
 
-**Last modified:** 2026-09-11 — `9-Goodput-Per-GPU.yaml` now defines the study's **second
-instance, `9-Goodput-Per-GPU-v2`**: same system/workflow/goal/parameters, plus the
-`vLLM.max_num_batched_tokens >= vLLM.max_num_seqs` `parameterConstraint` (experiments 16,
-17 and 22 of the first instance failed vLLM's `SchedulerConfig` validation on it), with
-the baseline taken `from` the first instance's experiment 1 and a new `bootstrap` step
-importing its experiments 2..N. The first instance (`9-Goodput-Per-GPU`, created
-2026-09-10) is stopped, not deleted — it is the bootstrap source. See "Setup & run".
+**Last modified:** 2026-09-11 — `9-Goodput-Per-GPU.yaml` now defines the study's **third
+instance, `9-Goodput-Per-GPU-v3`**: same system/workflow/goal/parameters as the first, plus
+the `vLLM.max_num_batched_tokens >= vLLM.max_num_seqs` `parameterConstraint` (experiments
+16, 17 and 22 of the first instance failed vLLM's `SchedulerConfig` validation on it), with
+the baseline taken `from` the first instance's experiment 1 and a `bootstrap` step importing
+its FINISHED experiments (2..23 minus 16, 17, 22). The second instance, `v2`, imported the
+three ERROR experiments too and never got past the bootstrap step (Akamas bug, see "Setup &
+run"). Neither the first instance (`9-Goodput-Per-GPU`, the import source) nor `v2` is
+deleted.
 
 Goodput-per-GPU study — maximize `(vLLM.prefill_token_throughput +
 vLLM.decode_token_throughput) / vLLM.active_gpus` subject to P95 TTFT ≤ 1500 ms / P95 ITL ≤ 300 ms — on 4x NVIDIA L4 (`g6.12xlarge`, node
@@ -113,7 +115,7 @@ waits for rollout, dumps all container logs), `RunTest` (Executor,
 `k8s/run_test_goodput.sh`, 105 m — deletes and re-creates the AIPerf Job, waits 5700 s,
 dumps its logs).
 
-## Study — `9-Goodput-Per-GPU-v2` (file: `9-Goodput-Per-GPU.yaml`; first instance: `9-Goodput-Per-GPU`)
+## Study — `9-Goodput-Per-GPU-v3` (file: `9-Goodput-Per-GPU.yaml`; first instance: `9-Goodput-Per-GPU`)
 
 - **Goal**: `(vLLM.prefill_token_throughput + vLLM.decode_token_throughput) / vLLM.active_gpus`
   (goodput per GPU actually used — the only change vs `8-parallelism-tuning`); SLA
@@ -131,9 +133,10 @@ dumps its logs).
   not allowed). Experiment 1 of the first instance is the `gpu_memory_utilization: 0.90`
   pinned / everything-else-unrendered baseline (TP/DP → vLLM defaults 1/1).
 - **`bootstrap`** (new 2026-09-11): `from: [{study: 9-Goodput-Per-GPU, experiments:
-  [2..N]}]` — explicit list (omitting `experiments` would import experiment 1 a second
-  time), failed experiments included by decision; the list on disk ends at 22 and must
-  be extended to the first instance's last experiment before `akamas create`.
+  [2..15, 18..21, 23]}]` — explicit list: omitting `experiments` would import experiment
+  1 a second time, and the ERROR experiments 16, 17, 22 must stay out because importing
+  a failed experiment crashes the campaign service (see "Setup & run" for the v2
+  incident). CONSTRAINTS_VIOLATED experiments (18, 21) import fine.
 - **`optimize`**: `numberOfExperiments: 1000`, `maxFailedExperiments: 200` — unchanged;
   its default 10 `numberOfInitExperiments` account for bootstrapped experiments.
 
@@ -199,29 +202,56 @@ applies internally): `akamas create -f studies/9-goodput-per-gpu/akamas/`.
 
 To tear down (e.g. to recreate after a change to `parametersSelection`/
 `parameterConstraints`/`steps`, which have no update verb — only `goal` does, via
-`akamas update study`): `akamas delete study "9-Goodput-Per-GPU-v2"`, then the workflow,
+`akamas update study`): `akamas delete study "9-Goodput-Per-GPU-v3"`, then the workflow,
 telemetry instance, components and system in reverse order — or
 `akamas delete -f studies/9-goodput-per-gpu/akamas/`. **Never delete the first instance
 `9-Goodput-Per-GPU`**: it is the record of what ran on 2026-09-10/11 and the source the
-`baseline`/`bootstrap` steps import from.
+`baseline`/`bootstrap` steps import from. **Do not delete `v2` either** without checking
+with Akamas first: its id is written onto the first instance's datapoints (below), and how
+Akamas deletes shared datapoints is unknown.
 
-### Restart as `9-Goodput-Per-GPU-v2` (2026-09-11)
+### Restart as `9-Goodput-Per-GPU-v3` (2026-09-11)
 
-The manifest now carries the `max_num_batched_tokens >= max_num_seqs` constraint and the
+The manifest carries the `max_num_batched_tokens >= max_num_seqs` constraint and the
 baseline-`from` + `bootstrap` steps. Everything but the study already exists and is reused;
 the first instance stays in place as the import source:
 
 ```bash
-akamas finish study "9-Goodput-Per-GPU"                 # stop; do NOT delete
-akamas list experiment "9-Goodput-Per-GPU"              # last experiment number → extend
-                                                        # the bootstrap list (ends at 22)
+akamas describe study "9-Goodput-Per-GPU"               # must be FINISHED (it is, 23 experiments)
 akamas create -f studies/9-goodput-per-gpu/akamas/9-Goodput-Per-GPU.yaml     # single file, NOT the folder: system/workflow already exist
-akamas describe study "9-Goodput-Per-GPU-v2"            # 6 parameterConstraints, steps
+akamas describe study "9-Goodput-Per-GPU-v3"            # 6 parameterConstraints, steps
                                                         # baseline / bootstrap / optimize
-akamas start study    "9-Goodput-Per-GPU-v2"
+akamas start study    "9-Goodput-Per-GPU-v3"
 ```
 
-Not verified live: the local CLI cannot reach the instance, so the first `akamas create
-study` of this manifest is the validation. Documented gap: the 3.7 docs do not say how
-imported failed experiments are treated (count toward `maxFailedExperiments`? constraint
-check on import?) — imported anyway by decision, see the manifest's bootstrap comment.
+Then watch the bootstrap step: within a couple of minutes `akamas list experiment
+"9-Goodput-Per-GPU-v3"` must show experiments 1..20 (1 = baseline, 2..20 = the 19
+imported ones) and the `optimize` step must be RUNNING. If the bootstrap step stays
+CREATED, look at `kubectl -n akamas logs deploy/campaign` for the NPE below.
+
+#### The v2 incident (2026-09-11 11:09-12:27 UTC) — why failed experiments are excluded
+
+`9-Goodput-Per-GPU-v2` was this manifest with the bootstrap list 2..23 *including* the
+ERROR experiments 16, 17 and 22 (the 3.7 docs do not say how imported failures are
+treated). It never got past the bootstrap step, and the UI sat at 0 %. From the cluster:
+
+- The baseline step imported experiment 1 instantly (score 1738.5, trial duration copied).
+- Airflow's `StepOperator` asked the `campaign` service to move `step_bootstrap` from
+  CREATED to RUNNING; the campaign service imported experiments 2..22, then crashed in
+  `TrialServiceImpl.refreshNormalization` (called from
+  `BootstrapStepLogic.processExperimentsToBootstrap`) with
+  `NullPointerException: Trial.getScore() is null` — the trials of ERROR experiments
+  have no score. CONSTRAINTS_VIOLATED experiments (18, 21) have one and passed.
+- The 500 made Airflow mark the task UP_FOR_RETRY and retry every ~90 s, with a retry
+  budget of 1073741825 — i.e. forever (62 attempts before the study was finished).
+- The campaign-side import is rolled back on each crash (v2 kept showing only experiment
+  1), but the metrics-service side is not: each attempt appends the v2 study id once more
+  to the `studyExperimentTrialIds` array of every datapoint of the source's experiments
+  2..21 (~30 k datapoints each; 62 copies of the id per datapoint when stopped). The
+  source datapoints themselves are intact (counts unchanged), just carrying duplicate ids.
+  `data_point` index size at the time: 251 MB, 2.3 M docs.
+
+Stopped with `akamas finish study "9-Goodput-Per-GPU-v2"` at 12:27:41 UTC. v2 is left in
+place, not deleted (see the tear-down note above). To report to Akamas: null-score trials
+crash the bootstrap import; the StepOperator retries a 500 forever; the datapoint id update
+is not idempotent.
