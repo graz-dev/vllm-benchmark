@@ -117,13 +117,59 @@ is the fix if their values are ever compared with this study's.
 
 ## Study design
 
-Identical to `8-parallelism-tuning` — read that README for the full rationale:
+Identical to `8-parallelism-tuning` (plus one `parameterConstraint` added 2026-09-11, see
+the next section) — read that README for the full rationale:
 - 16 tuned parameters (its 14 + TP/DP in [1, 4]), same domains;
-- 5 `parameterConstraints` — 3 vLLM-wide attention-backend/`kv_cache_dtype` rules,
+- 6 `parameterConstraints` — 3 vLLM-wide attention-backend/`kv_cache_dtype` rules,
+  `max_num_batched_tokens ≥ max_num_seqs` (vLLM-wide too, added 2026-09-11),
   `TP × DP ≤ 4`, `TP ≠ 3` (28 attention heads / 4 KV heads) → 7 valid topologies;
 - `baseline`: `gpu_memory_utilization: 0.90` pinned, all else unrendered (TP1/DP1 →
-  `active_gpus = 1`, so baseline score = raw goodput);
+  `active_gpus = 1`, so baseline score = raw goodput) — run once by the first instance
+  (`9-Goodput-Per-GPU`, experiment 1); the second instance imports it via `from`;
+- `bootstrap` (second instance only): imports experiments 2..N of the first instance,
+  trials and metrics included, failed ones too — nothing is re-run;
 - `optimize`: 1000 experiments / 200 failures.
+
+**Two Akamas study instances, one manifest.** `9-Goodput-Per-GPU` (created 2026-09-10) ran
+without the `max_num_batched_tokens ≥ max_num_seqs` constraint and was stopped on
+2026-09-11 after experiments 16, 17 and 22 failed on it. `9-Goodput-Per-GPU-v2` — the
+current content of `akamas/9-Goodput-Per-GPU.yaml`, same system/workflow/goal/parameters —
+adds the constraint and continues from where the first stopped through the imported
+baseline and the `bootstrap` step (see "How to run"). The first instance must not be
+deleted: it is the bootstrap source.
+
+## Constraint added 2026-09-11: `max_num_batched_tokens ≥ max_num_seqs` (experiment 22)
+
+Experiment 22 sampled `max_num_batched_tokens = 287` with `max_num_seqs = 538`. vLLM
+0.22.0 refuses that at engine-config time, before loading the model:
+
+```
+pydantic_core._pydantic_core.ValidationError: 1 validation error for SchedulerConfig
+  Value error, max_num_batched_tokens (287) must be greater than or equal to max_num_seqs (538).
+```
+
+The pod crash-loops, the rollout burns its 20 m progress deadline, and the experiment is
+marked FAILED. This is vLLM's own scheduler rule (each scheduler step must fit at least
+one token per running sequence), so it is hardware-independent — the same class as the
+three `kv_cache_dtype` rules already carried. It was one of `1-goodput-realistic-load`'s
+original 6 `parameterConstraints` (still present in studies 0, 3 and 5) and was dropped
+here together with the Ampere-specific ones by mistake — the manifest comment above
+`parameterConstraints` claimed only vLLM-wide rules were kept, which was not true for this
+one. With domains `[256, 8192]` vs `[16, 1024]` the invalid region is small, so only a
+sparse fraction of experiments hit it — but each one costs the full timeout.
+
+Experiments 16 (256 vs 763) and 17 (273 vs 512) failed the same way — three failures in
+the first 22 experiments, all with `max_num_batched_tokens` at the very bottom of its
+domain: the optimizer is actively probing the small-batch region (plausibly chasing the
+ITL P95 SLA), which makes the constraint matter more than the raw fraction of invalid
+space suggests.
+
+Re-added to `akamas/9-Goodput-Per-GPU.yaml` on 2026-09-11 as
+`vLLM.max_num_batched_tokens >= vLLM.max_num_seqs`. `parameterConstraints` cannot be
+updated on an existing study (Akamas 3.7.x: only `goal` can), so the first instance was
+stopped and the manifest was turned into a second instance, `9-Goodput-Per-GPU-v2`, that
+imports the first one's baseline and experiments instead of re-running them (see "Study
+design" and "How to run"). `8-parallelism-tuning` has the same gap.
 
 ## Stack & versions
 
@@ -184,10 +230,33 @@ akamas build optimization-pack /work/nvidia-gpu-120           # writes GPU_1-2-0
 akamas install -f optimization-pack GPU_1-2-0.json
 akamas describe optimization-pack GPU  | grep -E 'version|gpu_nvlink'
 
+# first instance (2026-09-10) — the manifest at commit a07c58b, without the
+# max_num_batched_tokens >= max_num_seqs constraint
 akamas create -f studies/9-goodput-per-gpu/akamas/
 akamas describe study "9-Goodput-Per-GPU"
 akamas start study "9-Goodput-Per-GPU"
 ```
+
+**Restart as `9-Goodput-Per-GPU-v2` (2026-09-11).** System, components, telemetry
+instance and workflow already exist and are reused — only the study is created:
+
+```bash
+akamas finish study "9-Goodput-Per-GPU"                 # stop the first instance; do NOT delete it
+akamas list experiment "9-Goodput-Per-GPU"              # note the last experiment number
+# edit akamas/9-Goodput-Per-GPU.yaml: append every experiment > 22 to the bootstrap
+# step's `experiments` list (the list on disk stops at 22)
+akamas create -f studies/9-goodput-per-gpu/akamas/9-Goodput-Per-GPU.yaml     # single file, NOT the folder: system/workflow already exist
+akamas describe study "9-Goodput-Per-GPU-v2"            # expect 6 parameterConstraints, 3 steps
+akamas start study "9-Goodput-Per-GPU-v2"
+```
+
+The baseline step's `from` and the `bootstrap` step import experiments — configuration,
+trials and metrics — without executing anything, so the second instance goes straight to
+its `optimize` step. The 3.7 docs do not specify how imported *failed* experiments are
+treated (whether they count toward `maxFailedExperiments`, or what happens to an imported
+configuration that violates the new constraint); they were imported anyway by explicit
+decision — the experiments still to run are what matters, and those three configurations
+are outside the feasible region now.
 
 ## Results
 

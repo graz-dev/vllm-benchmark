@@ -1,6 +1,16 @@
 kind: study
 
-name: 9-Goodput-Per-GPU
+# RENAMED 2026-09-11: the first instance of this study, "9-Goodput-Per-GPU" (created
+# 2026-09-10), ran without the max_num_batched_tokens >= max_num_seqs parameterConstraint
+# and lost experiments 16, 17 and 22 to it (see parameterConstraints below). Rather than
+# discard its history, this same file now defines its successor: same system, workflow,
+# goal, windowing, parametersSelection and optimize step; the baseline is IMPORTED from
+# the first instance's experiment 1 (baseline `from`) and its finished experiments are
+# IMPORTED through a new `bootstrap` step — neither is re-run. The filename keeps the
+# original name on purpose (one folder = one study lineage); the Akamas resource name
+# below is the one to use with `akamas start/describe study`. The first instance must
+# NOT be deleted: it is the bootstrap source and the record of what actually ran.
+name: 9-Goodput-Per-GPU-v2
 system: vLLM_Benchmark_9_Goodput_Per_GPU
 workflow: 9-Goodput-Per-GPU-Workflow
 
@@ -94,10 +104,14 @@ parametersSelection:
 # step's `values` — same as 2-larger-model-g7e; none is referenced by
 # k8s/01-deployment_template.yaml, so none ever renders for this study.
 #
-# The 6 parameterConstraints 1-goodput-realistic-load carried are NOT re-added here
-# either (same decision 2-larger-model-g7e took 2026-08-27): 3 of them were root-caused
-# on Ampere/A10G only, and this is a third GPU generation (Ada Lovelace/SM89). Only the
-# constraints below — vLLM-wide validation rules and physical topology limits — apply.
+# Of the 6 parameterConstraints 1-goodput-realistic-load carried, 3 are NOT re-added
+# here (same decision 2-larger-model-g7e took 2026-08-27; this is a third GPU
+# generation, Ada Lovelace/SM89): the TRITON_ATTN+fp8 and TRITON_ATTN+fp8_e4m3
+# exclusions root-caused on Ampere/A10G only, and FlashInfer+block_size. Only vLLM-wide
+# validation rules and physical topology limits apply below. NOTE 2026-09-11:
+# max_num_batched_tokens >= max_num_seqs IS such a vLLM-wide validation rule and was
+# wrongly dropped together with the Ampere-specific ones — re-added below (same `name`
+# as in study 1) after experiment 22 hit it; see that constraint's own comment.
 
 parameterConstraints:
   # --- Carried over from 2-larger-model-g7e: vLLM's own CUDA-platform validation and a
@@ -110,6 +124,21 @@ parameterConstraints:
     formula: vLLM.attention_backend != "TRITON_ATTN" || vLLM.kv_cache_dtype != "fp8_e5m2"
   - name: FLASHINFER does not support fp8_e5m2 kv_cache_dtype (query-quant bug)
     formula: vLLM.attention_backend != "FLASHINFER" || vLLM.kv_cache_dtype != "fp8_e5m2"
+
+  # --- RE-ADDED 2026-09-11 after an observed failure on THIS study: experiment 22
+  #     sampled max_num_batched_tokens=287 with max_num_seqs=538 and vLLM 0.22.0 refused
+  #     to start before even loading the model — "pydantic ValidationError for
+  #     SchedulerConfig: max_num_batched_tokens (287) must be greater than or equal to
+  #     max_num_seqs (538)" — so the rollout burned its 20m progress deadline and the
+  #     experiment FAILED. This is vLLM's own scheduler validation (each scheduler step
+  #     must fit at least one token per running sequence), hardware-independent exactly
+  #     like the three kv_cache_dtype rules above. It was one of 1-goodput-realistic-
+  #     load's original 6 constraints (still in studies 0, 3 and 5) and should never
+  #     have been dropped with the Ampere-specific ones. With domains [256, 8192] vs
+  #     [16, 1024] the invalid region is small, hence only sparse failures — but each
+  #     one costs the full 20m timeout. ---
+  - name: max_num_batched_tokens must be at least max_num_seqs
+    formula: vLLM.max_num_batched_tokens >= vLLM.max_num_seqs
 
   # --- NEW: topology must fit the node. Without these two, 9 of the 16 (TP, DP) pairs
   #     crash vLLM at startup and burn the 75m "Apply config" timeout each. ---
@@ -127,60 +156,52 @@ parameterConstraints:
     formula: vLLM.tensor_parallel_size != 3
 
 steps:
+  # --- baseline: IMPORTED, not re-run (2026-09-11) ---
+  # `from` takes the configuration AND the measured result of experiment 1 of the first
+  # instance of this study — per the 3.7 docs, with `from` "no experiment is actually
+  # executed", which is also why `values` and `doNotRenderParameters` are not allowed
+  # here (they were the first instance's way of running exp 1 with vLLM's real defaults
+  # and only gpu_memory_utilization=0.90 rendered; that is exactly what exp 1 holds, so
+  # importing it preserves that baseline design without spending the ~1h20 a re-run —
+  # rollout + 12x300s ramp — would cost). `from`/`experiments` are arrays but may hold
+  # exactly one element each.
   - name: baseline
     type: baseline
-    numberOfTrials: 1
-    # Same baseline design as 2-larger-model-g7e / 7-tensor-parallelism (1-goodput-
-    # realistic-load's original premise): every vLLM.* parameter EXCEPT
-    # gpu_memory_utilization is left UNRENDERED, so vLLM applies its own real defaults —
-    # its standard, most-tested startup path. This also sidesteps CLI flag-name drift
-    # (2-larger-model-g7e's "unrecognized arguments: --max-num-partial-prefills"
-    # incident): a flag that no longer exists never reaches the command line at baseline.
-    #
-    # doNotRenderParameters lists all 15 other TUNED parameters — including the two new
-    # ones, so baseline = tensor_parallel_size 1 / data_parallel_size 1 (vLLM's defaults:
-    # one replica on one of the four GPUs, the other three idle; DCGM per-GPU metrics
-    # on gpu1..gpu3 will show that) — plus the 10 pinned parameters that
-    # k8s/01-deployment_template.yaml also references.
-    #
-    # gpu_memory_utilization needs the explicit `values:` pin because the pack's own
-    # defaultValue is 0.92, not the 0.90 every study in this repo baselines at.
-    #
-    # The workflow's FileConfigurator sets ignoreUnsubstitutedTokens: true so the
-    # unrendered ${vLLM.*} tokens don't fail the task; apply_config.sh's Step 2 then
-    # strips those literal unsubstituted lines before the manifest is applied.
-    values:
-      vLLM.gpu_memory_utilization: 0.90
-    doNotRenderParameters:
-      - vLLM.max_num_seqs
-      - vLLM.max_num_batched_tokens
-      - vLLM.kv_cache_dtype
-      - vLLM.performance_mode
-      - vLLM.optimization_level
-      - vLLM.block_size
-      - vLLM.attention_backend
-      - vLLM.enforce_eager
-      - vLLM.scheduling_policy
-      - vLLM.disable_cascade_attn
-      - vLLM.tokenizer_mode
-      - vLLM.async_scheduling
-      - vLLM.max_cudagraph_capture_size
-      - vLLM.tensor_parallel_size
-      - vLLM.pipeline_parallel_size
-      - vLLM.data_parallel_size
-      - vLLM.enable_expert_parallel
-      - vLLM.disable_custom_all_reduce
-      - vLLM.dtype
-      - vLLM.decode_context_parallel_size
-      - vLLM.prefill_context_parallel_size
-      - vLLM.max_num_partial_prefills
-      - vLLM.max_long_partial_prefills
-      - vLLM.long_prefill_token_threshold
-      - vLLM.max_model_len
+    from:
+      - study: 9-Goodput-Per-GPU
+        experiments: [1]
+
+  # --- bootstrap: the first instance's finished experiments, IMPORTED (2026-09-11) ---
+  # Copies each listed experiment with its trials and system metrics, so the optimizer
+  # starts from what the first instance already learned instead of from scratch (the
+  # optimize step's numberOfInitExperiments — default 10 — "takes into account
+  # bootstrapped experiments", so no init phase is wasted either).
+  #
+  # The list is EXPLICIT only to leave out experiment 1: omitting `experiments` imports
+  # EVERY experiment of the source, baseline included, and the baseline step above
+  # already imports it. FAILED experiments (16, 17, 22 — max_num_batched_tokens <
+  # max_num_seqs — plus any other) are imported too, by explicit decision 2026-09-11:
+  # what matters is the experiments still to run, not curating the imported ones. The
+  # docs do not say how imported failures are treated (whether they count toward
+  # maxFailedExperiments, or what happens to a config that violates this study's
+  # parameterConstraints) — those three configs sit outside the feasible region now, so
+  # the optimizer cannot propose them again regardless.
+  #
+  # TODO before `akamas create study`: the first instance was still running when this
+  # was written (last experiment seen: 22) — after `akamas finish study
+  # "9-Goodput-Per-GPU"`, append every experiment numbered above 22 (see
+  # `akamas list experiment "9-Goodput-Per-GPU"`).
+  - name: bootstrap
+    type: bootstrap
+    from:
+      - study: 9-Goodput-Per-GPU
+        experiments: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
 
   # No doNotRenderParameters here on purpose: the optimizer renders all 16 tuned
   # parameters every experiment; the 10 pinned-but-untuned template tokens stay
-  # unsubstituted and apply_config.sh strips them, exactly as at baseline.
+  # unsubstituted and apply_config.sh strips them, exactly as the first instance's
+  # baseline did. numberOfExperiments counts this step's own experiments only — the
+  # imported ones above do not consume it.
   - name: optimize
     type: optimize
     numberOfExperiments: 1000

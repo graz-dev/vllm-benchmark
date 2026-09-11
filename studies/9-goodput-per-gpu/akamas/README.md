@@ -3,6 +3,14 @@
 **Created:** 2026-09-10 (everything copied from `8-parallelism-tuning`; the goal formula and
 two telemetry metrics are the only differences)
 
+**Last modified:** 2026-09-11 — `9-Goodput-Per-GPU.yaml` now defines the study's **second
+instance, `9-Goodput-Per-GPU-v2`**: same system/workflow/goal/parameters, plus the
+`vLLM.max_num_batched_tokens >= vLLM.max_num_seqs` `parameterConstraint` (experiments 16,
+17 and 22 of the first instance failed vLLM's `SchedulerConfig` validation on it), with
+the baseline taken `from` the first instance's experiment 1 and a new `bootstrap` step
+importing its experiments 2..N. The first instance (`9-Goodput-Per-GPU`, created
+2026-09-10) is stopped, not deleted — it is the bootstrap source. See "Setup & run".
+
 Goodput-per-GPU study — maximize `(vLLM.prefill_token_throughput +
 vLLM.decode_token_throughput) / vLLM.active_gpus` subject to P95 TTFT ≤ 1500 ms / P95 ITL ≤ 300 ms — on 4x NVIDIA L4 (`g6.12xlarge`, node
 group `llm-serving-l4`), with the optimizer searching **16 parameters**: the 14 of
@@ -105,21 +113,29 @@ waits for rollout, dumps all container logs), `RunTest` (Executor,
 `k8s/run_test_goodput.sh`, 105 m — deletes and re-creates the AIPerf Job, waits 5700 s,
 dumps its logs).
 
-## Study — `9-Goodput-Per-GPU`
+## Study — `9-Goodput-Per-GPU-v2` (file: `9-Goodput-Per-GPU.yaml`; first instance: `9-Goodput-Per-GPU`)
 
 - **Goal**: `(vLLM.prefill_token_throughput + vLLM.decode_token_throughput) / vLLM.active_gpus`
   (goodput per GPU actually used — the only change vs `8-parallelism-tuning`); SLA
   constraints and `stability` windowing (`vLLM.prefill_token_throughput`, width 6) verbatim.
 - **`parametersSelection`**: 14 from `2-larger-model-g7e` + `vLLM.tensor_parallel_size`
   [1, 4] + `vLLM.data_parallel_size` [1, 4] (pack: integer, [1, 16] and [1, 8]).
-- **`parameterConstraints`**: 3 carried over (FLASH_ATTN ⇒ `kv_cache_dtype == auto`;
-  TRITON_ATTN and FLASHINFER ⇒ `kv_cache_dtype != fp8_e5m2`) + 2 new —
+- **`parameterConstraints`**: 4 vLLM-wide validation rules (FLASH_ATTN ⇒ `kv_cache_dtype
+  == auto`; TRITON_ATTN and FLASHINFER ⇒ `kv_cache_dtype != fp8_e5m2`; and, re-added
+  2026-09-11 after experiment 22, `vLLM.max_num_batched_tokens >= vLLM.max_num_seqs` —
+  vLLM 0.22.0's `SchedulerConfig` pydantic check) + 2 topology rules —
   `vLLM.tensor_parallel_size * vLLM.data_parallel_size <= 4` and
   `vLLM.tensor_parallel_size != 3`. 7 valid (TP, DP) pairs out of 16.
-- **`baseline`**: `gpu_memory_utilization: 0.90` pinned; the other 15 tuned parameters
-  (TP/DP included → vLLM defaults 1/1) and the 10 pinned template tokens in
-  `doNotRenderParameters`.
-- **`optimize`**: `numberOfExperiments: 1000`, `maxFailedExperiments: 200`.
+- **`baseline`**: `from: [{study: 9-Goodput-Per-GPU, experiments: [1]}]` — imported, not
+  re-run (with `from` no experiment executes, and `values`/`doNotRenderParameters` are
+  not allowed). Experiment 1 of the first instance is the `gpu_memory_utilization: 0.90`
+  pinned / everything-else-unrendered baseline (TP/DP → vLLM defaults 1/1).
+- **`bootstrap`** (new 2026-09-11): `from: [{study: 9-Goodput-Per-GPU, experiments:
+  [2..N]}]` — explicit list (omitting `experiments` would import experiment 1 a second
+  time), failed experiments included by decision; the list on disk ends at 22 and must
+  be extended to the first instance's last experiment before `akamas create`.
+- **`optimize`**: `numberOfExperiments: 1000`, `maxFailedExperiments: 200` — unchanged;
+  its default 10 `numberOfInitExperiments` account for bootstrapped experiments.
 
 ## Validation performed
 
@@ -172,7 +188,7 @@ akamas create component          $D/components/cluster.yaml            "$S"
 akamas create component          $D/components/cluster_loadtest.yaml   "$S"
 akamas create telemetry-instance $D/telemetry/prometheus.yaml          "$S"
 akamas create workflow           $D/9-Goodput-Per-GPU-Workflow.yaml
-akamas create study              $D/9-Goodput-Per-GPU.yaml
+akamas create study              $D/9-Goodput-Per-GPU.yaml   # first instance: the manifest at commit a07c58b
 
 akamas describe study "9-Goodput-Per-GPU"
 akamas start study    "9-Goodput-Per-GPU"
@@ -181,7 +197,31 @@ akamas start study    "9-Goodput-Per-GPU"
 Bulk alternative (every file self-describes `kind:`/`system:`; same dependency order
 applies internally): `akamas create -f studies/9-goodput-per-gpu/akamas/`.
 
-To tear down (e.g. to recreate after a change to `parametersSelection`/`steps`, which
-have no update verb): `akamas delete study "9-Goodput-Per-GPU"`, then the workflow,
+To tear down (e.g. to recreate after a change to `parametersSelection`/
+`parameterConstraints`/`steps`, which have no update verb — only `goal` does, via
+`akamas update study`): `akamas delete study "9-Goodput-Per-GPU-v2"`, then the workflow,
 telemetry instance, components and system in reverse order — or
-`akamas delete -f studies/9-goodput-per-gpu/akamas/`.
+`akamas delete -f studies/9-goodput-per-gpu/akamas/`. **Never delete the first instance
+`9-Goodput-Per-GPU`**: it is the record of what ran on 2026-09-10/11 and the source the
+`baseline`/`bootstrap` steps import from.
+
+### Restart as `9-Goodput-Per-GPU-v2` (2026-09-11)
+
+The manifest now carries the `max_num_batched_tokens >= max_num_seqs` constraint and the
+baseline-`from` + `bootstrap` steps. Everything but the study already exists and is reused;
+the first instance stays in place as the import source:
+
+```bash
+akamas finish study "9-Goodput-Per-GPU"                 # stop; do NOT delete
+akamas list experiment "9-Goodput-Per-GPU"              # last experiment number → extend
+                                                        # the bootstrap list (ends at 22)
+akamas create -f studies/9-goodput-per-gpu/akamas/9-Goodput-Per-GPU.yaml     # single file, NOT the folder: system/workflow already exist
+akamas describe study "9-Goodput-Per-GPU-v2"            # 6 parameterConstraints, steps
+                                                        # baseline / bootstrap / optimize
+akamas start study    "9-Goodput-Per-GPU-v2"
+```
+
+Not verified live: the local CLI cannot reach the instance, so the first `akamas create
+study` of this manifest is the validation. Documented gap: the 3.7 docs do not say how
+imported failed experiments are treated (count toward `maxFailedExperiments`? constraint
+check on import?) — imported anyway by decision, see the manifest's bootstrap comment.
